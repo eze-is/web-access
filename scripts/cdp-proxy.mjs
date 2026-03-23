@@ -97,7 +97,19 @@ function checkPort(port) {
   });
 }
 
-function getWebSocketUrl(chromePort) {
+async function getWebSocketUrl(chromePort) {
+  // Chrome 115+ removed the generic /devtools/browser endpoint.
+  // The correct WebSocket URL (with a unique browser UUID) must be
+  // fetched from /json/version before each connection attempt.
+  try {
+    const resp = await fetch(`http://127.0.0.1:${chromePort}/json/version`);
+    const info = await resp.json();
+    if (info.webSocketDebuggerUrl) {
+      // Normalize to 127.0.0.1 in case Chrome returns "localhost"
+      return info.webSocketDebuggerUrl.replace('ws://localhost:', 'ws://127.0.0.1:');
+    }
+  } catch { /* fall through to legacy path */ }
+  // Fallback for older Chrome / Chromium versions
   return `ws://127.0.0.1:${chromePort}/devtools/browser`;
 }
 
