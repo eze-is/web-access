@@ -16,8 +16,14 @@ metadata:
 
 在开始联网操作前，先检查 CDP 模式可用性：
 
+**Linux/macOS:**
 ```bash
 bash ~/.claude/skills/web-access/scripts/check-deps.sh
+```
+
+**Windows:**
+```powershell
+~\.claude\skills\web-access\scripts\check-deps.ps1
 ```
 
 - **Node.js 22+**：必需（使用原生 WebSocket）。版本低于 22 可用但需安装 `ws` 模块。
@@ -79,8 +85,14 @@ bash ~/.claude/skills/web-access/scripts/check-deps.sh
 
 ### 启动
 
+**Linux/macOS:**
 ```bash
 bash ~/.claude/skills/web-access/scripts/check-deps.sh
+```
+
+**Windows:**
+```powershell
+~\.claude\skills\web-access\scripts\check-deps.ps1
 ```
 
 脚本会依次检查 Node.js、Chrome 端口，并确保 Proxy 已连接（未运行则自动启动并等待）。Proxy 20 分钟无请求自动退出，下次重新运行脚本即可。
@@ -165,8 +177,15 @@ curl -s "http://localhost:3456/close?target=ID"
 用 `/close` 关闭自己创建的 tab，必须保留用户原有的 tab 不受影响。
 
 Proxy 20 分钟无请求自动退出，无需手动清理。如需立即停止：
+
+**Linux/macOS:**
 ```bash
 curl -s http://localhost:3456/health && pkill -f cdp-proxy.mjs
+```
+
+**Windows:**
+```powershell
+Invoke-RestMethod -Uri http://localhost:3456/health -ErrorAction SilentlyContinue; Stop-Process -Name node -Filter "(CommandLine -like '*cdp-proxy.mjs*')" -ErrorAction SilentlyContinue
 ```
 
 ## 并行调研：子 Agent 分治策略

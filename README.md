@@ -47,17 +47,29 @@ CDP 模式需要 **Node.js 22+** 和 Chrome 开启远程调试：
 
 运行环境检查：
 
+**Linux/macOS:**
 ```bash
 bash ~/.claude/skills/web-access/scripts/check-deps.sh
+```
+
+**Windows:**
+```powershell
+~\.claude\skills\web-access\scripts\check-deps.ps1
 ```
 
 ## CDP Proxy API
 
 Proxy 通过 WebSocket 直连 Chrome（兼容 `chrome://inspect` 方式，无需命令行参数启动），提供 HTTP API：
 
+**Linux/macOS:**
 ```bash
+```
+
+**Windows:**
+```powershell
 # 启动（20 分钟无请求自动退出）
-node ~/.claude/skills/web-access/scripts/cdp-proxy.mjs &
+Start-Process node -ArgumentList "$env:USERPROFILE\.claude\skills\web-access\scripts\cdp-proxy.mjs" -WindowStyle Hidden
+```
 
 # 页面操作
 curl -s "http://localhost:3456/new?url=https://example.com"     # 新建 tab
