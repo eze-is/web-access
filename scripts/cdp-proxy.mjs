@@ -11,7 +11,9 @@ import os from 'node:os';
 import net from 'node:net';
 
 const PORT = parseInt(process.env.CDP_PROXY_PORT || '3456');
-const IDLE_TIMEOUT_MS = 20 * 60 * 1000; // 20 分钟无请求自动退出
+const IDLE_TIMEOUT_MS = process.env.CDP_PROXY_IDLE_TIMEOUT
+  ? parseInt(process.env.CDP_PROXY_IDLE_TIMEOUT)
+  : 0; // 默认永不退出；设正整数(ms)可恢复空闲超时
 
 let ws = null;
 let cmdId = 0;
@@ -241,6 +243,7 @@ async function waitForLoad(sessionId, timeoutMs = 15000) {
 // --- 空闲超时 ---
 function resetIdleTimer() {
   if (idleTimer) clearTimeout(idleTimer);
+  if (IDLE_TIMEOUT_MS <= 0) return; // 永不退出
   idleTimer = setTimeout(() => {
     console.log('[CDP Proxy] 空闲超时，自动退出');
     process.exit(0);
