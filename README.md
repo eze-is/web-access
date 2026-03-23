@@ -63,6 +63,8 @@ Proxy 通过 WebSocket 直连 Chrome（兼容 `chrome://inspect` 方式，无需
 
 **Linux/macOS:**
 ```bash
+# 启动
+node ~/.claude/skills/web-access/scripts/cdp-proxy.mjs &
 ```
 
 **Windows:**
