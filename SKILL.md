@@ -87,45 +87,58 @@ bash ~/.claude/skills/web-access/scripts/check-deps.sh
 
 脚本会依次检查 Node.js、Chrome 端口，并确保 Proxy 已连接（未运行则自动启动并等待）。Proxy 启动后持续运行。
 
+### 安全配置
+
+CDP Proxy 默认启用认证。启动时自动生成 token 并写入 `/tmp/cdp-proxy.token`。
+
+| 环境变量 | 默认值 | 说明 |
+|----------|--------|------|
+| `CDP_PROXY_TOKEN` | 自动生成 | 自定义认证 token |
+| `CDP_PROXY_SCREENSHOT_DIR` | `/tmp` | 截图文件允许写入的目录 |
+| `CDP_PROXY_EVAL` | `warn` | /eval 端点控制：`on` 静默允许 / `warn` 允许并记录日志 / `off` 禁用 |
+
 ### Proxy API
 
-所有操作通过 curl 调用 HTTP API：
+所有操作通过 curl 调用 HTTP API（`/health` 除外，均需认证）：
 
 ```bash
+# 读取认证 token
+TOKEN=$(cat /tmp/cdp-proxy.token)
+
 # 列出用户已打开的 tab
-curl -s http://localhost:3456/targets
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:3456/targets
 
 # 创建新后台 tab（自动等待加载）
-curl -s "http://localhost:3456/new?url=https://example.com"
+curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:3456/new?url=https://example.com"
 
 # 页面信息
-curl -s "http://localhost:3456/info?target=ID"
+curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:3456/info?target=ID"
 
 # 执行任意 JS：可读写 DOM、提取数据、操控元素、触发状态变更、提交表单、调用内部方法
-curl -s -X POST "http://localhost:3456/eval?target=ID" -d 'document.title'
+curl -s -X POST -H "Authorization: Bearer $TOKEN" "http://localhost:3456/eval?target=ID" -d 'document.title'
 
 # 捕获页面渲染状态（含视频当前帧）
-curl -s "http://localhost:3456/screenshot?target=ID&file=/tmp/shot.png"
+curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:3456/screenshot?target=ID&file=/tmp/shot.png"
 
 # 导航、后退
-curl -s "http://localhost:3456/navigate?target=ID&url=URL"
-curl -s "http://localhost:3456/back?target=ID"
+curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:3456/navigate?target=ID&url=URL"
+curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:3456/back?target=ID"
 
 # 点击（POST body 为 CSS 选择器）— JS el.click()，简单快速，覆盖大多数场景
-curl -s -X POST "http://localhost:3456/click?target=ID" -d 'button.submit'
+curl -s -X POST -H "Authorization: Bearer $TOKEN" "http://localhost:3456/click?target=ID" -d 'button.submit'
 
 # 真实鼠标点击 — CDP Input.dispatchMouseEvent，算用户手势，能触发文件对话框
-curl -s -X POST "http://localhost:3456/clickAt?target=ID" -d 'button.upload'
+curl -s -X POST -H "Authorization: Bearer $TOKEN" "http://localhost:3456/clickAt?target=ID" -d 'button.upload'
 
 # 文件上传 — 直接设置 file input 的本地文件路径，绕过文件对话框
-curl -s -X POST "http://localhost:3456/setFiles?target=ID" -d '{"selector":"input[type=file]","files":["/path/to/file.png"]}'
+curl -s -X POST -H "Authorization: Bearer $TOKEN" "http://localhost:3456/setFiles?target=ID" -d '{"selector":"input[type=file]","files":["/path/to/file.png"]}'
 
 # 滚动（触发懒加载）
-curl -s "http://localhost:3456/scroll?target=ID&y=3000"
-curl -s "http://localhost:3456/scroll?target=ID&direction=bottom"
+curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:3456/scroll?target=ID&y=3000"
+curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:3456/scroll?target=ID&direction=bottom"
 
 # 关闭 tab
-curl -s "http://localhost:3456/close?target=ID"
+curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:3456/close?target=ID"
 ```
 
 ### 页面内导航

@@ -9,12 +9,23 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
+import crypto from 'node:crypto';
 
 const PORT = parseInt(process.env.CDP_PROXY_PORT || '3456');
 let ws = null;
 let cmdId = 0;
 const pending = new Map(); // id -> {resolve, timer}
 const sessions = new Map(); // targetId -> sessionId
+
+// --- 安全认证 ---
+const AUTH_TOKEN = process.env.CDP_PROXY_TOKEN || crypto.randomUUID();
+const TOKEN_FILE = '/tmp/cdp-proxy.token';
+
+// --- 截图安全 ---
+const SCREENSHOT_DIR = path.resolve(process.env.CDP_PROXY_SCREENSHOT_DIR || '/tmp');
+
+// --- /eval 安全 ---
+const EVAL_MODE = (process.env.CDP_PROXY_EVAL || 'warn').toLowerCase(); // on | warn | off
 
 // --- WebSocket 兼容层 ---
 let WS;
@@ -251,6 +262,26 @@ async function readBody(req) {
   return body;
 }
 
+// --- 请求认证 ---
+function checkAuth(req, res) {
+  const auth = req.headers['authorization'];
+  if (auth !== `Bearer ${AUTH_TOKEN}`) {
+    res.statusCode = 401;
+    res.setHeader('WWW-Authenticate', 'Bearer realm="CDP Proxy"');
+    res.end(JSON.stringify({ error: '未授权：需要 Authorization: Bearer <token>' }));
+    return false;
+  }
+  return true;
+}
+
+function validateScreenshotPath(filePath) {
+  const resolved = path.resolve(filePath);
+  if (!resolved.startsWith(SCREENSHOT_DIR + path.sep)) {
+    return null;
+  }
+  return resolved;
+}
+
 // --- HTTP API ---
 const server = http.createServer(async (req, res) => {
   const parsed = new URL(req.url, `http://localhost:${PORT}`);
@@ -264,6 +295,15 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/health') {
       const connected = ws && (ws.readyState === WS.OPEN || ws.readyState === 1);
       res.end(JSON.stringify({ status: 'ok', connected, sessions: sessions.size, chromePort }));
+      return;
+    }
+
+    if (!checkAuth(req, res)) return;
+
+    // /eval off 模式在连接 Chrome 之前就拦截
+    if (pathname === '/eval' && EVAL_MODE === 'off') {
+      res.statusCode = 403;
+      res.end(JSON.stringify({ error: '/eval 已禁用（设置 CDP_PROXY_EVAL=on 或 warn 以启用）' }));
       return;
     }
 
@@ -319,11 +359,14 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ ok: true }));
     }
 
-    // POST /eval?target=xxx - 执行 JS
+    // POST /eval?target=xxx - 执行 JS（off 模式已在 connect 之前拦截）
     else if (pathname === '/eval') {
       const sid = await ensureSession(q.target);
       const body = await readBody(req);
       const expr = body || q.expr || 'document.title';
+      if (EVAL_MODE === 'warn') {
+        console.warn(`[CDP Proxy] ⚠️  /eval 调用 | target: ${q.target} | expr: ${expr.slice(0, 80)}`);
+      }
       const resp = await sendCDP('Runtime.evaluate', {
         expression: expr,
         returnByValue: true,
@@ -475,8 +518,16 @@ const server = http.createServer(async (req, res) => {
         quality: format === 'jpeg' ? 80 : undefined,
       }, sid);
       if (q.file) {
-        fs.writeFileSync(q.file, Buffer.from(resp.result.data, 'base64'));
-        res.end(JSON.stringify({ saved: q.file }));
+        const safePath = validateScreenshotPath(q.file);
+        if (!safePath) {
+          res.statusCode = 403;
+          res.end(JSON.stringify({
+            error: `路径不允许：文件必须在 ${SCREENSHOT_DIR} 目录下`,
+          }));
+          return;
+        }
+        fs.writeFileSync(safePath, Buffer.from(resp.result.data, 'base64'));
+        res.end(JSON.stringify({ saved: safePath }));
       } else {
         res.setHeader('Content-Type', 'image/' + format);
         res.end(Buffer.from(resp.result.data, 'base64'));
@@ -552,6 +603,9 @@ async function main() {
 
   server.listen(PORT, '127.0.0.1', () => {
     console.log(`[CDP Proxy] 运行在 http://localhost:${PORT}`);
+    // 写入 token 文件供外部工具读取
+    fs.writeFileSync(TOKEN_FILE, AUTH_TOKEN, { mode: 0o600 });
+    console.log(`[CDP Proxy] 认证 token 已写入 ${TOKEN_FILE}`);
     // 启动时尝试连接 Chrome（非阻塞）
     connect().catch(e => console.error('[CDP Proxy] 初始连接失败:', e.message, '（将在首次请求时重试）'));
   });

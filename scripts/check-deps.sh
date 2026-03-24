@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 # 环境检查 + 确保 CDP Proxy 就绪
 
+print_token_status() {
+  TOKEN_FILE="/tmp/cdp-proxy.token"
+  if [ -f "$TOKEN_FILE" ]; then
+    echo "auth: token loaded ($(cat "$TOKEN_FILE" | cut -c1-8)...)"
+  else
+    echo "auth: ⚠️ token file not found"
+  fi
+}
+
 # Node.js
 if command -v node &>/dev/null; then
   NODE_VER=$(node --version 2>/dev/null)
@@ -32,6 +41,7 @@ echo "chrome: ok (port 9222)"
 HEALTH=$(curl -s --connect-timeout 2 "http://127.0.0.1:3456/health" 2>/dev/null)
 if echo "$HEALTH" | grep -q '"connected":true'; then
   echo "proxy: ready"
+  print_token_status
 else
   if ! echo "$HEALTH" | grep -q '"ok"'; then
     echo "proxy: starting..."
@@ -40,7 +50,11 @@ else
   fi
   for i in $(seq 1 15); do
     sleep 1
-    curl -s http://localhost:3456/health | grep -q '"connected":true' && echo "proxy: ready" && exit 0
+    curl -s http://localhost:3456/health | grep -q '"connected":true' && {
+      echo "proxy: ready"
+      print_token_status
+      exit 0
+    }
     [ $i -eq 3 ] && echo "⚠️  Chrome 可能有授权弹窗，请点击「允许」后等待连接..."
   done
   echo "❌ 连接超时，请检查 Chrome 调试设置"
