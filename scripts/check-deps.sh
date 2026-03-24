@@ -35,7 +35,8 @@ if echo "$HEALTH" | grep -q '"connected":true'; then
 else
   if ! echo "$HEALTH" | grep -q '"ok"'; then
     echo "proxy: starting..."
-    node ~/.claude/skills/web-access/scripts/cdp-proxy.mjs > /tmp/cdp-proxy.log 2>&1 &
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    node "$SCRIPT_DIR/cdp-proxy.mjs" > /tmp/cdp-proxy.log 2>&1 &
   fi
   for i in $(seq 1 15); do
     sleep 1
