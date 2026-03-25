@@ -55,13 +55,13 @@ bash ~/.claude/skills/web-access/scripts/check-deps.sh
 
 **Jina**（可选预处理层，可与 WebFetch/curl 组合使用，由于其特性可节省 tokens 消耗，请积极在任务合适时组合使用）：第三方网络服务，可将网页转为 Markdown，大幅节省 token 但可能有信息损耗。调用方式为 `r.jina.ai/example.com`（URL 前加前缀，不保留原网址 http 前缀），限 20 RPM。适合文章、博客、文档、PDF 等以正文为核心的页面；对数据面板、商品页等非文章结构页面可能提取到错误区块。
 
-进入浏览器层后，`/eval` 就是你的眼睛和手：
+进入浏览器层后，有两种"看和做"的方式：
 
-- **看**：用 `/eval` 查询 DOM，发现页面上的链接、按钮、表单、文本内容——相当于「看看这个页面有什么」
-- **做**：用 `/click` 点击元素、`/scroll` 滚动加载、`/eval` 填表提交——像人一样在页面内自然导航
-- **读**：用 `/eval` 提取文字内容，判断图片/视频是否承载核心信息——是则提取媒体 URL 定向读取或 `/screenshot` 视觉识别
+**CDP Proxy（程序化优先）**：`/eval` 是你的眼睛和手——用它查询 DOM 发现元素，用 `/click` 点击，用 `/scroll` 滚动，用 `/eval` 填表提交。先 eval 了解页面结构，再决定下一步。
 
-在页面内浏览时，**先 eval 了解页面结构，再决定下一步动作**——看到列表就点进详情，看到分页就翻页，看到内容就提取。不需要提前规划所有步骤。
+**agent-browser（交互优先）**：`snapshot -i` 是你的眼睛——它返回页面的可访问性树和 `@ref` 标识，你直接用 `click @e1`、`fill @e2 "text"` 操作，不需要写 CSS 选择器。适合不确定页面结构时的探索式操作。
+
+在页面内浏览时，不需要提前规划所有步骤——看到列表就点进详情，看到分页就翻页，看到内容就提取。
 
 ### 程序化操作与 GUI 交互
 
@@ -76,10 +76,53 @@ bash ~/.claude/skills/web-access/scripts/check-deps.sh
 
 ## 浏览器 CDP 模式
 
-通过 CDP Proxy 直连用户日常 Chrome，天然携带登录态，无需启动独立浏览器。
+通过 CDP 直连用户日常 Chrome，天然携带登录态，无需启动独立浏览器。
 若无用户明确要求，不主动操作用户已有 tab，所有操作都在自己创建的后台 tab 中进行，保持对用户环境的最小侵入。不关闭用户 tab 的前提下，完成任务后关闭自己创建的 tab，保持环境整洁。
 
-### 启动
+有两种 CDP 操作方式，根据场景选择：
+
+| 方式 | 适用场景 | 优势 |
+|------|---------|------|
+| **CDP Proxy**（curl API） | 数据提取、JS 执行、媒体抓取、批量操作 | 精确控制 DOM、适合程序化操作和并行子 Agent |
+| **agent-browser**（CLI） | 表单填写、多步交互、效果走查、页面结构理解 | snapshot/ref 模式让 AI 直接"看到"页面结构，无需手写选择器 |
+
+两者共享同一个 Chrome 实例和登录态，可在同一任务中混合使用。
+
+### agent-browser 模式（推荐用于交互类任务）
+
+当任务涉及**复杂页面交互**（多步表单、动态元素定位、UI 走查、视觉审查）时，优先使用 agent-browser。它的 `snapshot → @ref → 操作 → 再 snapshot` 循环比手写 CSS 选择器更可靠——AI 直接从 snapshot 的可访问性树中识别元素，不需要猜测选择器。
+
+**前置**：需安装 `npm i -g agent-browser`。
+
+```bash
+# 连接用户 Chrome（确保先关掉 agent-browser 自带的 headless 实例）
+agent-browser close
+agent-browser connect <port>           # port 从 check-deps.sh 获取，通常为 9222
+
+# 核心循环：snapshot → 识别 @ref → 操作 → 再 snapshot
+agent-browser open <url>
+agent-browser wait --load networkidle
+agent-browser snapshot -i              # 获取可交互元素（带 @e1, @e2...）
+agent-browser click @e1                # 通过 @ref 点击
+agent-browser fill @e2 "text"          # 通过 @ref 填写
+agent-browser snapshot -i              # 页面变化后必须重新 snapshot
+
+# 页面信息
+agent-browser get text @e1             # 获取元素文本
+agent-browser get url                  # 当前 URL
+agent-browser screenshot [path]        # 截屏
+agent-browser screenshot --annotate    # 带标注截屏（@ref 编号叠加在页面上）
+agent-browser tab list                 # 列出标签页
+agent-browser scroll down 500          # 滚动
+```
+
+**关键**：`@ref` 在页面变化后失效，操作后必须重新 `snapshot`。详见 `agent-browser --help`。
+
+### CDP Proxy 模式
+
+适合精确的 JS 执行、DOM 操作、批量数据提取、并行子 Agent 场景。
+
+**启动**：
 
 ```bash
 bash ~/.claude/skills/web-access/scripts/check-deps.sh
