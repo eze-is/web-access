@@ -82,8 +82,9 @@ async function discoverChromePort() {
   for (const port of commonPorts) {
     const ok = await checkPort(port);
     if (ok) {
-      console.log(`[CDP Proxy] 扫描发现 Chrome 调试端口: ${port}`);
-      return { port, wsPath: null };
+      const wsPath = await fetchWsPath(port);
+      console.log(`[CDP Proxy] 扫描发现 Chrome 调试端口: ${port}${wsPath ? ' (带 wsPath)' : ''}`);
+      return { port, wsPath };
     }
   }
 
@@ -98,6 +99,27 @@ function checkPort(port) {
     const timer = setTimeout(() => { socket.destroy(); resolve(false); }, 2000);
     socket.once('connect', () => { clearTimeout(timer); socket.destroy(); resolve(true); });
     socket.once('error', () => { clearTimeout(timer); resolve(false); });
+  });
+}
+
+// 从 /json/version 获取带 UUID 的 WebSocket 路径
+// Chrome 在非 --remote-debugging-port 模式下只接受带 UUID 的路径，拒绝裸 /devtools/browser
+// 使用顶层已 import 的 http 模块，无需 require()
+function fetchWsPath(port) {
+  return new Promise((resolve) => {
+    http.get(`http://127.0.0.1:${port}/json/version`, { timeout: 2000 }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const info = JSON.parse(data);
+          const wsUrl = info.webSocketDebuggerUrl;
+          resolve(wsUrl ? new URL(wsUrl).pathname : null);
+        } catch {
+          resolve(null);
+        }
+      });
+    }).on('error', () => resolve(null));
   });
 }
 
