@@ -262,6 +262,16 @@ const server = http.createServer(async (req, res) => {
   try {
     // /health 不需要连接 Chrome
     if (pathname === '/health') {
+      const shouldReconnect = q.reconnect === '1';
+      const connectedBefore = ws && (ws.readyState === WS.OPEN || ws.readyState === 1);
+
+      // 允许健康检查顺手触发一次重连，便于 check-deps.sh 唤起 Chrome 授权弹窗。
+      if (shouldReconnect && !connectedBefore) {
+        try {
+          await connect();
+        } catch { /* 保持 health 接口稳定返回，由调用方决定是否继续等待 */ }
+      }
+
       const connected = ws && (ws.readyState === WS.OPEN || ws.readyState === 1);
       res.end(JSON.stringify({ status: 'ok', connected, sessions: sessions.size, chromePort }));
       return;

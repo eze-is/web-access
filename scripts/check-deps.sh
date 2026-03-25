@@ -93,9 +93,15 @@ else
     SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
     node "$SCRIPT_DIR/cdp-proxy.mjs" > /tmp/cdp-proxy.log 2>&1 &
   fi
-  for i in $(seq 1 15); do
+  PROXY_HINT_SHOWN=0
+  for i in $(seq 1 30); do
     sleep 1
-    curl -s http://localhost:3456/health | grep -q '"connected":true' && echo "proxy: ready" && exit 0
+    HEALTH=$(curl -s --connect-timeout 2 "http://127.0.0.1:3456/health?reconnect=1" 2>/dev/null)
+    echo "$HEALTH" | grep -q '"connected":true' && echo "proxy: ready" && exit 0
+    if [ $PROXY_HINT_SHOWN -eq 0 ] && echo "$HEALTH" | grep -q '"ok"'; then
+      echo "proxy: waiting for Chrome authorization..."
+      PROXY_HINT_SHOWN=1
+    fi
     [ $i -eq 3 ] && echo "⚠️  Chrome 可能有授权弹窗，请点击「允许」后等待连接..."
   done
   echo "❌ 连接超时，请检查 Chrome 调试设置"
