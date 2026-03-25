@@ -101,8 +101,30 @@ function checkPort(port) {
   });
 }
 
-function getWebSocketUrl(port, wsPath) {
+async function getWebSocketUrl(port, wsPath) {
   if (wsPath) return `ws://127.0.0.1:${port}${wsPath}`;
+
+  // For --remote-debugging-port launched Chrome, fetch the full WebSocket URL
+  // from /json/version which includes the required browser UUID
+  try {
+    const url = await new Promise((resolve, reject) => {
+      http.get(`http://127.0.0.1:${port}/json/version`, { timeout: 3000 }, (res) => {
+        let data = '';
+        res.on('data', c => data += c);
+        res.on('end', () => {
+          try {
+            const json = JSON.parse(data);
+            resolve(json.webSocketDebuggerUrl || null);
+          } catch { resolve(null); }
+        });
+      }).on('error', () => resolve(null));
+    });
+    if (url) {
+      console.log(`[CDP Proxy] 从 /json/version 获取 WebSocket URL`);
+      return url;
+    }
+  } catch { /* fall through */ }
+
   return `ws://127.0.0.1:${port}/devtools/browser`;
 }
 
@@ -127,7 +149,7 @@ async function connect() {
     chromeWsPath = discovered.wsPath;
   }
 
-  const wsUrl = getWebSocketUrl(chromePort, chromeWsPath);
+  const wsUrl = await getWebSocketUrl(chromePort, chromeWsPath);
   if (!wsUrl) throw new Error('无法获取 Chrome WebSocket URL');
 
   return new Promise((resolve, reject) => {
