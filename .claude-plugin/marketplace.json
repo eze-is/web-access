@@ -1,0 +1,19 @@
+{
+  "name": "web-access",
+  "owner": {
+    "name": "一泽 Eze"
+  },
+  "metadata": {
+    "description": "Complete web browsing and automation skill for Claude Code"
+  },
+  "plugins": [
+    {
+      "name": "web-access",
+      "description": "All web operations: search, fetch, CDP browser automation, site experience accumulation",
+      "source": "./",
+      "category": "productivity",
+      "tags": ["web", "browser", "cdp", "automation", "search"],
+      "skills": ["./"]
+    }
+  ]
+}

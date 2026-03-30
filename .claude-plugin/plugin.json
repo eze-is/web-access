@@ -1,0 +1,12 @@
+{
+  "name": "web-access",
+  "description": "Complete web browsing and automation skill for Claude Code - intelligent tool selection, CDP browser automation, and site experience accumulation",
+  "version": "2.4.1",
+  "author": {
+    "name": "一泽 Eze"
+  },
+  "homepage": "https://github.com/eze-is/web-access",
+  "repository": "https://github.com/eze-is/web-access",
+  "license": "MIT",
+  "keywords": ["web", "browser", "cdp", "automation", "search"]
+}
