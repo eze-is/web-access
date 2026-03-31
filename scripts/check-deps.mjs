@@ -46,16 +46,20 @@ function activePortFiles() {
         path.join(home, 'Library/Application Support/Google/Chrome/DevToolsActivePort'),
         path.join(home, 'Library/Application Support/Google/Chrome Canary/DevToolsActivePort'),
         path.join(home, 'Library/Application Support/Chromium/DevToolsActivePort'),
+        path.join(home, 'Library/Application Support/BraveSoftware/Brave-Browser/DevToolsActivePort'),
       ];
     case 'linux':
       return [
         path.join(home, '.config/google-chrome/DevToolsActivePort'),
         path.join(home, '.config/chromium/DevToolsActivePort'),
+        path.join(home, '.config/BraveSoftware/Brave-Browser/DevToolsActivePort'),
+        path.join(home, '.var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser/DevToolsActivePort'), // Flatpak Brave
       ];
     case 'win32':
       return [
         path.join(localAppData, 'Google/Chrome/User Data/DevToolsActivePort'),
         path.join(localAppData, 'Chromium/User Data/DevToolsActivePort'),
+        path.join(localAppData, 'BraveSoftware/Brave-Browser/User Data/DevToolsActivePort'),
       ];
     default:
       return [];
@@ -74,7 +78,7 @@ async function detectChromePort() {
     } catch (_) {}
   }
   // 回退：探测常见端口
-  for (const port of [9222, 9229, 9333]) {
+  for (const port of [9222, 9229, 9333, 10724]) {
     if (await checkPort(port)) {
       return port;
     }

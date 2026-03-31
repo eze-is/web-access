@@ -44,18 +44,22 @@ async function discoverChromePort() {
       path.join(home, 'Library/Application Support/Google/Chrome/DevToolsActivePort'),
       path.join(home, 'Library/Application Support/Google/Chrome Canary/DevToolsActivePort'),
       path.join(home, 'Library/Application Support/Chromium/DevToolsActivePort'),
+      path.join(home, 'Library/Application Support/BraveSoftware/Brave-Browser/DevToolsActivePort'),
     );
   } else if (platform === 'linux') {
     const home = os.homedir();
     possiblePaths.push(
       path.join(home, '.config/google-chrome/DevToolsActivePort'),
       path.join(home, '.config/chromium/DevToolsActivePort'),
+      path.join(home, '.config/BraveSoftware/Brave-Browser/DevToolsActivePort'),
+      path.join(home, '.var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser/DevToolsActivePort'), // Flatpak Brave
     );
   } else if (platform === 'win32') {
     const localAppData = process.env.LOCALAPPDATA || '';
     possiblePaths.push(
       path.join(localAppData, 'Google/Chrome/User Data/DevToolsActivePort'),
       path.join(localAppData, 'Chromium/User Data/DevToolsActivePort'),
+      path.join(localAppData, 'BraveSoftware/Brave-Browser/User Data/DevToolsActivePort'),
     );
   }
 
@@ -78,7 +82,7 @@ async function discoverChromePort() {
   }
 
   // 2. 扫描常用端口
-  const commonPorts = [9222, 9229, 9333];
+  const commonPorts = [9222, 9229, 9333, 10724];
   for (const port of commonPorts) {
     const ok = await checkPort(port);
     if (ok) {
