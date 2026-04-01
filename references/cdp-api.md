@@ -88,6 +88,37 @@ curl -s "http://localhost:3456/scroll?target=ID&direction=bottom"
 curl -s "http://localhost:3456/screenshot?target=ID&file=/tmp/shot.png"
 ```
 
+### GET /extract?target=ID 或 /extract?url=URL
+一次性提取页面结构化信息。两种用法：
+- 传 `target`：对已打开的 tab 提取
+- 传 `url`：自动创建后台 tab → 提取 → 关闭 tab（一步到位）
+
+自动滚动到底部触发懒加载后再提取，确保动态内容已加载。
+
+```bash
+# 对已有 tab 提取
+curl -s "http://localhost:3456/extract?target=TARGET_ID"
+
+# 传 URL 一步到位（自动开 tab → 提取 → 关闭）
+curl -s "http://localhost:3456/extract?url=https://example.com"
+```
+
+返回 JSON 包含以下字段：
+
+| 字段 | 说明 |
+|------|------|
+| `title` | 页面标题 |
+| `url` | 当前 URL |
+| `meta` | description、keywords、author、og 标签、canonical 等 meta 信息 |
+| `times` | 时间信息（`<time>` 标签、meta 时间字段、JSON-LD 中的时间），标注来源 |
+| `text` | 正文内容（优先 `<article>` → `<main>` → 文本密度最大块，自动过滤导航/侧边栏） |
+| `links` | 所有链接（href + 文本 + rel），已去重 |
+| `images` | 所有图片（src + alt + 尺寸），含 data-src 懒加载和 background-image |
+| `videos` | 所有视频（src + poster + duration），含 YouTube/Bilibili 等 iframe 嵌入 |
+| `audios` | 所有音频（src + duration） |
+| `jsonLd` | 页面中的 JSON-LD 结构化数据（如有） |
+| `stats` | 统计摘要（链接/图片/视频/音频数量、正文长度） |
+
 ## /eval 使用提示
 
 - POST body 为任意 JS 表达式，返回 `{ value }` 或 `{ error }`
