@@ -138,10 +138,90 @@ async function ensureProxy() {
   return false;
 }
 
+// --- 子 Agent 权限：PreToolUse Hook 自动配置 ---
+// Claude Code 子 Agent 不继承任何级别的 permissions.allow（anthropics/claude-code#18950, #37730, #25526）
+// 唯一对子 Agent 生效的权限机制是 PreToolUse hooks（权限评估最高优先级）
+// 此函数将 hook 脚本安装到 ~/.claude/hooks/ 并在 settings.json 中注册
+
+const HOOK_FILENAME = 'web-access-approve-tools.mjs';
+
+function ensureHooks() {
+  const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+  const settingsPath = path.join(configDir, 'settings.json');
+  const hooksDir = path.join(configDir, 'hooks');
+  const hookDest = path.join(hooksDir, HOOK_FILENAME);
+  const hookSrc = path.join(ROOT, 'scripts', 'approve-tools-hook.mjs');
+
+  try {
+    // 1. 安装 hook 脚本到稳定位置
+    // install hook script to stable location
+    if (!fs.existsSync(hooksDir)) fs.mkdirSync(hooksDir, { recursive: true });
+
+    const srcContent = fs.readFileSync(hookSrc, 'utf8');
+    let needCopy = true;
+    if (fs.existsSync(hookDest)) {
+      needCopy = fs.readFileSync(hookDest, 'utf8') !== srcContent;
+    }
+    if (needCopy) {
+      fs.writeFileSync(hookDest, srcContent, { mode: 0o755 });
+    }
+
+    // 2. 在 settings.json 中注册 PreToolUse hook
+    // register PreToolUse hook in settings.json
+    let settings = {};
+    if (fs.existsSync(settingsPath)) {
+      settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    }
+
+    if (!settings.hooks) settings.hooks = {};
+    if (!Array.isArray(settings.hooks.PreToolUse)) settings.hooks.PreToolUse = [];
+
+    const hookCommand = `node "${hookDest}"`;
+    const hookEntry = {
+      matcher: 'Bash|WebSearch|WebFetch',
+      hooks: [{ type: 'command', command: hookCommand }],
+    };
+
+    // 检查是否已注册（按 command 匹配，避免重复）
+    // check if already registered (match by command to avoid duplicates)
+    const alreadyRegistered = settings.hooks.PreToolUse.some(entry =>
+      entry.hooks?.some(h => h.command?.includes(HOOK_FILENAME))
+    );
+
+    if (alreadyRegistered) {
+      // 更新已有条目（hook 脚本可能已更新）
+      // update existing entry (hook script may have been updated)
+      settings.hooks.PreToolUse = settings.hooks.PreToolUse.map(entry => {
+        if (entry.hooks?.some(h => h.command?.includes(HOOK_FILENAME))) {
+          return hookEntry;
+        }
+        return entry;
+      });
+      if (needCopy) {
+        fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
+        console.log('hooks: updated (web-access hook script refreshed)');
+      } else {
+        console.log('hooks: ok');
+      }
+    } else {
+      settings.hooks.PreToolUse.push(hookEntry);
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
+      console.log('hooks: configured (PreToolUse hook registered for sub-agent CDP/search access)');
+    }
+  } catch (e) {
+    // hook 配置失败不阻塞主流程，仅警告
+    // hook setup failure is non-blocking, just warn
+    console.log(`hooks: warn (auto-config failed: ${e.message})`);
+    console.log('  子 Agent 并行调研可能因权限不足失败');
+    console.log('  详见: https://github.com/anthropics/claude-code/issues/18950');
+  }
+}
+
 // --- main ---
 
 async function main() {
   checkNode();
+  ensureHooks();
 
   const chromePort = await detectChromePort();
   if (!chromePort) {
@@ -154,7 +234,6 @@ async function main() {
   if (!proxyOk) {
     process.exit(1);
   }
-
 }
 
 await main();

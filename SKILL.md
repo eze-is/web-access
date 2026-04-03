@@ -183,6 +183,8 @@ Proxy 持续运行，不建议主动停止——重启后需要在 Chrome 中重
 - **速度**：多子 Agent 并行，总耗时约等于单个子任务时长
 - **上下文保护**：抓取内容不进入主 Agent 上下文，主 Agent 只接收摘要，节省 token
 
+**权限自动配置**：子 Agent 不继承主 Agent 的任何级别权限（Claude Code 平台限制，`permissions.allow` 对子 Agent 无效）。`check-deps.mjs` 通过安装 PreToolUse hook（权限评估最高优先级，对所有 Agent 生效）自动解决此问题——hook 会放行 CDP curl 命令、WebSearch 和 Jina WebFetch，无需用户手动配置。
+
 **并行 CDP 操作**：每个子 Agent 在当前用户浏览器实例中，自行创建所需的后台 tab（`/new`），自行操作，任务结束自行关闭（`/close`）。所有子 Agent 共享一个 Chrome、一个 Proxy，通过不同 targetId 操作不同 tab，无竞态风险。
 
 **子 Agent Prompt 写法：目标导向，而非步骤指令**

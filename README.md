@@ -93,6 +93,8 @@ node "$CLAUDE_SKILL_DIR/scripts/check-deps.mjs"
 # 手动运行请替换为实际路径，如 ~/.claude/skills/web-access
 ```
 
+> **子 Agent 权限**：Claude Code 子 Agent 不继承任何级别的 `permissions.allow`（[claude-code#18950](https://github.com/anthropics/claude-code/issues/18950)），首次运行 `check-deps.mjs` 时会自动安装 PreToolUse hook 到 `~/.claude/hooks/`，放行 CDP curl 命令、WebSearch 和 Jina 调用，确保并行调研功能的子 Agent 正常工作，无需手动配置。
+
 ## CDP Proxy API
 
 Proxy 通过 WebSocket 直连 Chrome（兼容 `chrome://inspect` 方式，无需命令行参数启动），提供 HTTP API：
