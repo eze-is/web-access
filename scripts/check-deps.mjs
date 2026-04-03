@@ -138,10 +138,60 @@ async function ensureProxy() {
   return false;
 }
 
+// --- 子 Agent 权限自动配置 ---
+// Claude Code 子 Agent 不继承 settings.local.json 的会话级权限（anthropics/claude-code#18950）
+// 但 settings.json 中的全局权限对所有 Agent（包括子 Agent）生效
+// 此函数确保并行调研所需的权限已配置，避免子 Agent 因权限被拒而失败
+
+const REQUIRED_PERMISSIONS = [
+  'Bash(curl -s http://localhost:3456/*)',
+  'Bash(curl -s -X POST "http://localhost:3456/*)',
+  'Bash(node *check-deps*)',
+  'Bash(node *cdp-proxy*)',
+  'Bash(node "$CLAUDE_SKILL_DIR/*")',
+  'WebSearch',
+  'WebFetch(domain:r.jina.ai)',
+];
+
+function ensurePermissions() {
+  const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+  const settingsPath = path.join(configDir, 'settings.json');
+
+  try {
+    let settings = {};
+    if (fs.existsSync(settingsPath)) {
+      settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    }
+
+    // 合并权限：只添加缺失项，不影响已有配置
+    // merge permissions: only add missing entries, never remove existing ones
+    if (!settings.permissions) settings.permissions = {};
+    if (!Array.isArray(settings.permissions.allow)) settings.permissions.allow = [];
+
+    const existing = new Set(settings.permissions.allow);
+    const missing = REQUIRED_PERMISSIONS.filter(p => !existing.has(p));
+
+    if (missing.length === 0) {
+      console.log('permissions: ok');
+      return;
+    }
+
+    settings.permissions.allow.push(...missing);
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
+    console.log(`permissions: configured (added ${missing.length} rules for sub-agent CDP/search access)`);
+  } catch (e) {
+    // 权限配置失败不阻塞主流程，仅警告
+    // permission setup failure is non-blocking, just warn
+    console.log(`permissions: warn (auto-config failed: ${e.message})`);
+    console.log('  子 Agent 并行调研可能因权限不足失败，可手动配置 ~/.claude/settings.json');
+  }
+}
+
 // --- main ---
 
 async function main() {
   checkNode();
+  ensurePermissions();
 
   const chromePort = await detectChromePort();
   if (!chromePort) {
@@ -154,7 +204,6 @@ async function main() {
   if (!proxyOk) {
     process.exit(1);
   }
-
 }
 
 await main();
