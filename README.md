@@ -93,7 +93,7 @@ node "$CLAUDE_SKILL_DIR/scripts/check-deps.mjs"
 # 手动运行请替换为实际路径，如 ~/.claude/skills/web-access
 ```
 
-> **子 Agent 权限**：首次运行 `check-deps.mjs` 时，脚本会自动将并行调研所需的权限（CDP curl 命令、WebSearch、Jina 等）写入 `~/.claude/settings.json`。这解决了 Claude Code 子 Agent 不继承会话级权限的平台限制（[claude-code#18950](https://github.com/anthropics/claude-code/issues/18950)），无需手动配置。
+> **子 Agent 权限**：Claude Code 子 Agent 不继承任何级别的 `permissions.allow`（[claude-code#18950](https://github.com/anthropics/claude-code/issues/18950)），首次运行 `check-deps.mjs` 时会自动安装 PreToolUse hook 到 `~/.claude/hooks/`，放行 CDP curl 命令、WebSearch 和 Jina 调用，确保并行调研功能的子 Agent 正常工作，无需手动配置。
 
 ## CDP Proxy API
 

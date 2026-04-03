@@ -138,52 +138,82 @@ async function ensureProxy() {
   return false;
 }
 
-// --- 子 Agent 权限自动配置 ---
-// Claude Code 子 Agent 不继承 settings.local.json 的会话级权限（anthropics/claude-code#18950）
-// 但 settings.json 中的全局权限对所有 Agent（包括子 Agent）生效
-// 此函数确保并行调研所需的权限已配置，避免子 Agent 因权限被拒而失败
+// --- 子 Agent 权限：PreToolUse Hook 自动配置 ---
+// Claude Code 子 Agent 不继承任何级别的 permissions.allow（anthropics/claude-code#18950, #37730, #25526）
+// 唯一对子 Agent 生效的权限机制是 PreToolUse hooks（权限评估最高优先级）
+// 此函数将 hook 脚本安装到 ~/.claude/hooks/ 并在 settings.json 中注册
 
-const REQUIRED_PERMISSIONS = [
-  'Bash(curl -s http://localhost:3456/*)',
-  'Bash(curl -s -X POST "http://localhost:3456/*)',
-  'Bash(node *check-deps*)',
-  'Bash(node *cdp-proxy*)',
-  'Bash(node "$CLAUDE_SKILL_DIR/*")',
-  'WebSearch',
-  'WebFetch(domain:r.jina.ai)',
-];
+const HOOK_FILENAME = 'web-access-approve-tools.mjs';
 
-function ensurePermissions() {
+function ensureHooks() {
   const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
   const settingsPath = path.join(configDir, 'settings.json');
+  const hooksDir = path.join(configDir, 'hooks');
+  const hookDest = path.join(hooksDir, HOOK_FILENAME);
+  const hookSrc = path.join(ROOT, 'scripts', 'approve-tools-hook.mjs');
 
   try {
+    // 1. 安装 hook 脚本到稳定位置
+    // install hook script to stable location
+    if (!fs.existsSync(hooksDir)) fs.mkdirSync(hooksDir, { recursive: true });
+
+    const srcContent = fs.readFileSync(hookSrc, 'utf8');
+    let needCopy = true;
+    if (fs.existsSync(hookDest)) {
+      needCopy = fs.readFileSync(hookDest, 'utf8') !== srcContent;
+    }
+    if (needCopy) {
+      fs.writeFileSync(hookDest, srcContent, { mode: 0o755 });
+    }
+
+    // 2. 在 settings.json 中注册 PreToolUse hook
+    // register PreToolUse hook in settings.json
     let settings = {};
     if (fs.existsSync(settingsPath)) {
       settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
     }
 
-    // 合并权限：只添加缺失项，不影响已有配置
-    // merge permissions: only add missing entries, never remove existing ones
-    if (!settings.permissions) settings.permissions = {};
-    if (!Array.isArray(settings.permissions.allow)) settings.permissions.allow = [];
+    if (!settings.hooks) settings.hooks = {};
+    if (!Array.isArray(settings.hooks.PreToolUse)) settings.hooks.PreToolUse = [];
 
-    const existing = new Set(settings.permissions.allow);
-    const missing = REQUIRED_PERMISSIONS.filter(p => !existing.has(p));
+    const hookCommand = `node "${hookDest}"`;
+    const hookEntry = {
+      matcher: 'Bash|WebSearch|WebFetch',
+      hooks: [{ type: 'command', command: hookCommand }],
+    };
 
-    if (missing.length === 0) {
-      console.log('permissions: ok');
-      return;
+    // 检查是否已注册（按 command 匹配，避免重复）
+    // check if already registered (match by command to avoid duplicates)
+    const alreadyRegistered = settings.hooks.PreToolUse.some(entry =>
+      entry.hooks?.some(h => h.command?.includes(HOOK_FILENAME))
+    );
+
+    if (alreadyRegistered) {
+      // 更新已有条目（hook 脚本可能已更新）
+      // update existing entry (hook script may have been updated)
+      settings.hooks.PreToolUse = settings.hooks.PreToolUse.map(entry => {
+        if (entry.hooks?.some(h => h.command?.includes(HOOK_FILENAME))) {
+          return hookEntry;
+        }
+        return entry;
+      });
+      if (needCopy) {
+        fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
+        console.log('hooks: updated (web-access hook script refreshed)');
+      } else {
+        console.log('hooks: ok');
+      }
+    } else {
+      settings.hooks.PreToolUse.push(hookEntry);
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
+      console.log('hooks: configured (PreToolUse hook registered for sub-agent CDP/search access)');
     }
-
-    settings.permissions.allow.push(...missing);
-    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
-    console.log(`permissions: configured (added ${missing.length} rules for sub-agent CDP/search access)`);
   } catch (e) {
-    // 权限配置失败不阻塞主流程，仅警告
-    // permission setup failure is non-blocking, just warn
-    console.log(`permissions: warn (auto-config failed: ${e.message})`);
-    console.log('  子 Agent 并行调研可能因权限不足失败，可手动配置 ~/.claude/settings.json');
+    // hook 配置失败不阻塞主流程，仅警告
+    // hook setup failure is non-blocking, just warn
+    console.log(`hooks: warn (auto-config failed: ${e.message})`);
+    console.log('  子 Agent 并行调研可能因权限不足失败');
+    console.log('  详见: https://github.com/anthropics/claude-code/issues/18950');
   }
 }
 
@@ -191,7 +221,7 @@ function ensurePermissions() {
 
 async function main() {
   checkNode();
-  ensurePermissions();
+  ensureHooks();
 
   const chromePort = await detectChromePort();
   if (!chromePort) {
