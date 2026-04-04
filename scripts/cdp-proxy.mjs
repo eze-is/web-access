@@ -102,8 +102,38 @@ function checkPort(port) {
 }
 
 function getWebSocketUrl(port, wsPath) {
-  if (wsPath) return `ws://127.0.0.1:${port}${wsPath}`;
+  if (wsPath) {
+    // wsPath may already be a full ws:// URL (from /json/version lookup)
+    if (wsPath.startsWith('ws://') || wsPath.startsWith('wss://')) return wsPath;
+    return `ws://127.0.0.1:${port}${wsPath}`;
+  }
   return `ws://127.0.0.1:${port}/devtools/browser`;
+}
+
+// Fetch the full WebSocket URL (with UUID) from Chrome's HTTP JSON API.
+// This is needed when wsPath is null (e.g. port discovered via scanning,
+// not via DevToolsActivePort file). Chrome requires the UUID suffix.
+function fetchWsUrlFromHttp(port) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(`http://127.0.0.1:${port}/json/version`, { timeout: 3000 }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(data);
+          if (json.webSocketDebuggerUrl) {
+            resolve(json.webSocketDebuggerUrl);
+          } else {
+            reject(new Error('/json/version 响应中缺少 webSocketDebuggerUrl'));
+          }
+        } catch (e) {
+          reject(new Error('解析 /json/version 响应失败: ' + e.message));
+        }
+      });
+    });
+    req.on('error', (e) => reject(new Error('请求 /json/version 失败: ' + e.message)));
+    req.on('timeout', () => { req.destroy(); reject(new Error('/json/version 请求超时')); });
+  });
 }
 
 // --- WebSocket 连接管理 ---
@@ -127,6 +157,19 @@ async function connect() {
     }
     chromePort = discovered.port;
     chromeWsPath = discovered.wsPath;
+
+    // When wsPath is null (port found via scanning, not DevToolsActivePort),
+    // fetch the full WS URL from Chrome's /json/version HTTP endpoint.
+    // Chrome requires the UUID suffix in the WebSocket path.
+    if (!chromeWsPath) {
+      try {
+        const fullWsUrl = await fetchWsUrlFromHttp(chromePort);
+        chromeWsPath = fullWsUrl; // store full URL; getWebSocketUrl handles it
+        console.log(`[CDP Proxy] 从 /json/version 获取到 WebSocket URL`);
+      } catch (e) {
+        console.warn(`[CDP Proxy] 无法从 /json/version 获取 WS URL: ${e.message}，回退到无 UUID 路径`);
+      }
+    }
   }
 
   const wsUrl = getWebSocketUrl(chromePort, chromeWsPath);
