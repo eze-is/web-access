@@ -1,0 +1,4 @@
+interface:
+  display_name: "Web Access"
+  short_description: "Research dynamic and authenticated sites"
+  default_prompt: "Use $web-access to research a dynamic or authenticated website with Codex-native web and CDP workflows."

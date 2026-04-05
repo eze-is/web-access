@@ -8,8 +8,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// Codex CLI adaptation: resolve the skill root dynamically.
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const ROOT = path.resolve(__dirname, '..');
 const PROXY_SCRIPT = path.join(ROOT, 'scripts', 'cdp-proxy.mjs');
+console.log('Codex web-access skill root:', ROOT);
+console.log('CDP proxy script:', PROXY_SCRIPT);
 const PROXY_PORT = Number(process.env.CDP_PROXY_PORT || 3456);
 
 // --- Node.js 版本检查 ---
