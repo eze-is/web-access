@@ -56,6 +56,7 @@ function activePortFiles() {
       return [
         path.join(localAppData, 'Google/Chrome/User Data/DevToolsActivePort'),
         path.join(localAppData, 'Chromium/User Data/DevToolsActivePort'),
+        path.join(localAppData, 'Microsoft/Edge/User Data/DevToolsActivePort'),
       ];
     default:
       return [];
@@ -73,12 +74,59 @@ async function detectChromePort() {
       }
     } catch (_) {}
   }
-  // 回退：探测常见端口
-  for (const port of [9222, 9229, 9333]) {
-    if (await checkPort(port)) {
-      return port;
-    }
+  // 回退：探测常见端口（固定 + 动态范围）
+  const commonPorts = [9222, 9229, 9333];
+  for (const port of commonPorts) {
+    if (await checkPort(port)) return port;
   }
+  // 扫描动态端口范围（Chrome/Edge 远程调试通常分配在 1900-9999）
+  // 只扫已知的 Edge/Chrome 进程占用的端口，避免全段扫描
+  try {
+    const { execSync } = await import('node:child_process');
+    const out = execSync(
+      os.platform() === 'win32'
+        ? 'netstat -ano | findstr "LISTENING"'
+        : 'ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null',
+      { encoding: 'utf8', timeout: 5000 }
+    );
+    const lines = out.split('\n').filter(Boolean);
+    // 匹配 chrome/msedge/chromium 进程的监听端口
+    const browserPorts = lines
+      .map(line => {
+        const m = line.match(/:(\d+)\s.*LISTENING\s+(\d+)/);
+        return m ? { port: parseInt(m[1]), pid: parseInt(m[2]) } : null;
+      })
+      .filter(Boolean);
+    // 获取浏览器进程 PID 集合
+    let browserPids = new Set();
+    try {
+      const psOut = execSync(
+        os.platform() === 'win32'
+          ? 'tasklist /FI "IMAGENAME eq msedge.exe" /FO CSV /NH & tasklist /FI "IMAGENAME eq chrome.exe" /FO CSV /NH'
+          : 'pgrep -f "chrome|msedge|chromium"',
+        { encoding: 'utf8', timeout: 5000 }
+      );
+      browserPids = new Set(
+        psOut.split('\n')
+          .map(l => {
+            const m = l.match(/(\d+)/);
+            return m ? parseInt(m[1]) : null;
+          })
+          .filter(Boolean)
+      );
+    } catch { /* pid detection failed */ }
+    // 从浏览器进程的监听端口中找 CDP 端口
+    for (const { port, pid } of browserPorts) {
+      if (!browserPids.has(pid)) continue;
+      if (port >= 1024 && port < 65536 && await checkPort(port)) {
+        // 验证是否是 CDP 端点（返回 JSON）
+        try {
+          const resp = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1000) });
+          if (resp.ok) return port;
+        } catch { /* not CDP */ }
+      }
+    }
+  } catch { /* process scan failed, skip */ }
   return null;
 }
 
