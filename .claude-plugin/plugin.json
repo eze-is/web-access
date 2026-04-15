@@ -8,6 +8,5 @@
   "homepage": "https://github.com/eze-is/web-access",
   "repository": "https://github.com/eze-is/web-access",
   "license": "MIT",
-  "keywords": ["web", "browser", "cdp", "automation", "search"],
-  "skills": "./"
+  "keywords": ["web", "browser", "cdp", "automation", "search"]
 }
