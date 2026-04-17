@@ -68,6 +68,19 @@ node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 
 浏览网页时，**先了解页面结构，再决定下一步动作**。不需要提前规划所有步骤。
 
+### 目标 URL 未知时
+
+用户提到的系统若带有组织内部特征（如"我们的 XX 系统"、"公司 XX 平台"），或公网搜索无实质命中，优先查用户本地 Chrome 书签/历史——内网系统、SSO 后台、组织内部工具不会出现在公网搜索结果中，但通常已在用户的书签里。
+
+- **书签文件**：Chrome 用户数据目录下的 `Bookmarks`（JSON，grep 关键词即可）
+  - macOS：`~/Library/Application Support/Google/Chrome/Default/Bookmarks`
+  - Linux：`~/.config/google-chrome/Default/Bookmarks`
+  - Windows：`%LOCALAPPDATA%\Google\Chrome\User Data\Default\Bookmarks`
+- **历史数据库**：同目录下的 `History`（SQLite，可用 `sqlite3` 查询）
+- 多 profile 用户的 profile 名可查父目录下的 `Local State`（`profile.info_cache` 字段）
+
+查到 URL 后再决定用 WebFetch / curl / CDP。本地一手线索优先于向用户索要 URL。
+
 ### 程序化操作与 GUI 交互
 
 浏览器内操作页面有两种方式：
