@@ -47,6 +47,7 @@ function activePortFiles() {
         path.join(home, 'Library/Application Support/Google/Chrome Canary/DevToolsActivePort'),
         path.join(home, 'Library/Application Support/Chromium/DevToolsActivePort'),
         path.join(home, 'Library/Application Support/BraveSoftware/Brave-Browser/DevToolsActivePort'),
+        path.join(home, 'Library/Application Support/Microsoft/Edge/DevToolsActivePort'),
       ];
     case 'linux':
       return [
@@ -54,12 +55,14 @@ function activePortFiles() {
         path.join(home, '.config/chromium/DevToolsActivePort'),
         path.join(home, '.config/BraveSoftware/Brave-Browser/DevToolsActivePort'),
         path.join(home, '.var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser/DevToolsActivePort'), // Flatpak Brave
+        path.join(home, '.config/microsoft-edge/DevToolsActivePort'),
       ];
     case 'win32':
       return [
         path.join(localAppData, 'Google/Chrome/User Data/DevToolsActivePort'),
         path.join(localAppData, 'Chromium/User Data/DevToolsActivePort'),
         path.join(localAppData, 'BraveSoftware/Brave-Browser/User Data/DevToolsActivePort'),
+        path.join(localAppData, 'Microsoft/Edge/User Data/DevToolsActivePort'),
       ];
     default:
       return [];

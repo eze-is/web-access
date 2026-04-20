@@ -45,6 +45,7 @@ async function discoverChromePort() {
       path.join(home, 'Library/Application Support/Google/Chrome Canary/DevToolsActivePort'),
       path.join(home, 'Library/Application Support/Chromium/DevToolsActivePort'),
       path.join(home, 'Library/Application Support/BraveSoftware/Brave-Browser/DevToolsActivePort'),
+      path.join(home, 'Library/Application Support/Microsoft/Edge/DevToolsActivePort'),
     );
   } else if (platform === 'linux') {
     const home = os.homedir();
@@ -53,6 +54,7 @@ async function discoverChromePort() {
       path.join(home, '.config/chromium/DevToolsActivePort'),
       path.join(home, '.config/BraveSoftware/Brave-Browser/DevToolsActivePort'),
       path.join(home, '.var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser/DevToolsActivePort'), // Flatpak Brave
+      path.join(home, '.config/microsoft-edge/DevToolsActivePort'),
     );
   } else if (platform === 'win32') {
     const localAppData = process.env.LOCALAPPDATA || '';
@@ -60,6 +62,7 @@ async function discoverChromePort() {
       path.join(localAppData, 'Google/Chrome/User Data/DevToolsActivePort'),
       path.join(localAppData, 'Chromium/User Data/DevToolsActivePort'),
       path.join(localAppData, 'BraveSoftware/Brave-Browser/User Data/DevToolsActivePort'),
+      path.join(localAppData, 'Microsoft/Edge/User Data/DevToolsActivePort'),
     );
   }
 
