@@ -154,6 +154,18 @@ async function main() {
   if (!proxyOk) {
     process.exit(1);
   }
+
+  // 列出已有站点经验
+  const patternsDir = path.join(ROOT, 'references', 'site-patterns');
+  try {
+    const sites = fs.readdirSync(patternsDir)
+      .filter(f => f.endsWith('.md'))
+      .map(f => f.replace(/\.md$/, ''));
+    if (sites.length) {
+      console.log(`\nsite-patterns: ${sites.join(', ')}`);
+    }
+  } catch {}
+
 }
 
 await main();

@@ -191,6 +191,11 @@ async function connect() {
         const { sessionId, targetInfo } = msg.params;
         sessions.set(targetInfo.targetId, sessionId);
       }
+      // 拦截页面对 Chrome 调试端口的探测请求（反风控）
+      if (msg.method === 'Fetch.requestPaused') {
+        const { requestId, sessionId: sid } = msg.params;
+        sendCDP('Fetch.failRequest', { requestId, errorReason: 'ConnectionRefused' }, sid).catch(() => {});
+      }
       if (msg.id && pending.has(msg.id)) {
         const { resolve, timer } = pending.get(msg.id);
         clearTimeout(timer);
@@ -236,14 +241,35 @@ function sendCDP(method, params = {}, sessionId = null) {
   });
 }
 
+// 已启用端口拦截的 session 集合（避免重复启用）
+const portGuardedSessions = new Set();
+
 async function ensureSession(targetId) {
   if (sessions.has(targetId)) return sessions.get(targetId);
   const resp = await sendCDP('Target.attachToTarget', { targetId, flatten: true });
   if (resp.result?.sessionId) {
-    sessions.set(targetId, resp.result.sessionId);
-    return resp.result.sessionId;
+    const sid = resp.result.sessionId;
+    sessions.set(targetId, sid);
+    // 启用调试端口探测拦截
+    await enablePortGuard(sid);
+    return sid;
   }
   throw new Error('attach 失败: ' + JSON.stringify(resp.error));
+}
+
+// 拦截页面对 Chrome 调试端口的探测（反风控）
+// 只拦截 127.0.0.1:{chromePort} 的请求，不影响其他任何本地服务
+async function enablePortGuard(sessionId) {
+  if (!chromePort || portGuardedSessions.has(sessionId)) return;
+  try {
+    await sendCDP('Fetch.enable', {
+      patterns: [
+        { urlPattern: `http://127.0.0.1:${chromePort}/*`, requestStage: 'Request' },
+        { urlPattern: `http://localhost:${chromePort}/*`, requestStage: 'Request' },
+      ]
+    }, sessionId);
+    portGuardedSessions.add(sessionId);
+  } catch { /* Fetch 域启用失败不影响主流程 */ }
 }
 
 // --- 等待页面加载 ---
