@@ -56,6 +56,7 @@ async function discoverChromePort() {
     possiblePaths.push(
       path.join(localAppData, 'Google/Chrome/User Data/DevToolsActivePort'),
       path.join(localAppData, 'Chromium/User Data/DevToolsActivePort'),
+      path.join(localAppData, 'Microsoft/Edge/User Data/DevToolsActivePort'),
     );
   }
 
@@ -86,6 +87,40 @@ async function discoverChromePort() {
       return { port, wsPath: null };
     }
   }
+  // 3. 通过进程扫描找到浏览器动态 CDP 端口
+  try {
+    const { execSync } = await import('node:child_process');
+    const out = execSync(
+      platform === 'win32'
+        ? 'netstat -ano | findstr "LISTENING"'
+        : 'ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null',
+      { encoding: 'utf8', timeout: 5000 }
+    );
+    let browserPids = new Set();
+    try {
+      const psOut = execSync(
+        platform === 'win32'
+          ? 'tasklist /FI "IMAGENAME eq msedge.exe" /FO CSV /NH & tasklist /FI "IMAGENAME eq chrome.exe" /FO CSV /NH'
+          : 'pgrep -f "chrome|msedge|chromium"',
+        { encoding: 'utf8', timeout: 5000 }
+      );
+      browserPids = new Set(
+        psOut.split('\n').map(l => { const m = l.match(/(\d+)/); return m ? parseInt(m[1]) : null; }).filter(Boolean)
+      );
+    } catch {}
+    for (const line of out.split('\n').filter(Boolean)) {
+      const m = line.match(/:(\d+)\s.*LISTENING\s+(\d+)/);
+      if (!m) continue;
+      const p = parseInt(m[1]), pid = parseInt(m[2]);
+      if (!browserPids.has(pid)) continue;
+      if (p < 1024 || p >= 65536) continue;
+      if (!(await checkPort(p))) continue;
+      try {
+        const r = await fetch(`http://127.0.0.1:${p}/json/version`, { signal: AbortSignal.timeout(1000) });
+        if (r.ok) { console.log(`[CDP Proxy] 进程扫描发现调试端口: ${p}`); return { port: p, wsPath: null }; }
+      } catch {}
+    }
+  } catch {}
 
   return null;
 }
