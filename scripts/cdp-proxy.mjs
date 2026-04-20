@@ -102,8 +102,16 @@ function checkPort(port) {
 }
 
 function getWebSocketUrl(port, wsPath) {
-  if (wsPath) return `ws://127.0.0.1:${port}${wsPath}`;
-  return `ws://127.0.0.1:${port}/devtools/browser`;
+  const host = process.env.WEB_ACCESS_REMOTE_CDP_HOST || '127.0.0.1';
+  if (wsPath) return `ws://${host}:${port}${wsPath}`;
+  return `ws://${host}:${port}/devtools/browser`;
+}
+
+function isRemoteCDPHost() {
+  const host = process.env.WEB_ACCESS_REMOTE_CDP_HOST;
+  if (!host) return false;
+  const localHosts = ['127.0.0.1', 'localhost', '::1', '::ffff:127.0.0.1'];
+  return !localHosts.includes(host);
 }
 
 // --- WebSocket 连接管理 ---
@@ -115,7 +123,18 @@ async function connect() {
   if (ws && (ws.readyState === WS.OPEN || ws.readyState === 1)) return;
   if (connectingPromise) return connectingPromise;  // 复用进行中的连接
 
-  if (!chromePort) {
+  // 远程模式判断
+  const isRemoteMode = isRemoteCDPHost();
+  if (isRemoteMode) {
+    const port = parseInt(process.env.WEB_ACCESS_REMOTE_CDP_PORT || '9222');
+    if (isNaN(port) || port <= 0 || port > 65535) {
+      throw new Error('WEB_ACCESS_REMOTE_CDP_PORT 无效: ' + process.env.WEB_ACCESS_REMOTE_CDP_PORT);
+    }
+    chromePort = port;
+    chromeWsPath = null;
+  }
+
+  if (!isRemoteMode && !chromePort) {
     const discovered = await discoverChromePort();
     if (!discovered) {
       throw new Error(
@@ -236,6 +255,7 @@ async function ensureSession(targetId) {
 // 只拦截 127.0.0.1:{chromePort} 的请求，不影响其他任何本地服务
 async function enablePortGuard(sessionId) {
   if (!chromePort || portGuardedSessions.has(sessionId)) return;
+  if (isRemoteCDPHost()) return; // 非本地地址时跳过端口拦截
   try {
     await sendCDP('Fetch.enable', {
       patterns: [
