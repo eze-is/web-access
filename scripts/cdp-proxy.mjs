@@ -1,14 +1,15 @@
 #!/usr/bin/env node
-// CDP Proxy - 通过 HTTP API 操控用户日常 Chrome
-// 要求：Chrome 已开启 --remote-debugging-port
+// CDP Proxy - 通过 HTTP API 操控用户日常 Chromium 系浏览器
+// 要求：Chrome 或 Edge 已开启 remote debugging
 // Node.js 22+（使用原生 WebSocket）
 
 import http from 'node:http';
 import { URL } from 'node:url';
 import fs from 'node:fs';
-import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
+
+import { discoverBrowserDebugEndpoint } from './lib/browser-paths.mjs';
 
 const PORT = parseInt(process.env.CDP_PROXY_PORT || '3456');
 let ws = null;
@@ -35,66 +36,26 @@ if (typeof globalThis.WebSocket !== 'undefined') {
   }
 }
 
-// --- 自动发现 Chrome 调试端口 ---
-async function discoverChromePort() {
-  // 1. 尝试读 DevToolsActivePort 文件
-  const possiblePaths = [];
-  const platform = os.platform();
+// --- 自动发现浏览器调试端口 ---
+async function discoverBrowserPort() {
+  const discovered = await discoverBrowserDebugEndpoint({
+    platform: os.platform(),
+    homeDir: os.homedir(),
+    localAppData: process.env.LOCALAPPDATA || '',
+    checkPortImpl: checkPort,
+  });
 
-  if (platform === 'darwin') {
-    const home = os.homedir();
-    possiblePaths.push(
-      path.join(home, 'Library/Application Support/Google/Chrome/DevToolsActivePort'),
-      path.join(home, 'Library/Application Support/Google/Chrome Canary/DevToolsActivePort'),
-      path.join(home, 'Library/Application Support/Chromium/DevToolsActivePort'),
-    );
-  } else if (platform === 'linux') {
-    const home = os.homedir();
-    possiblePaths.push(
-      path.join(home, '.config/google-chrome/DevToolsActivePort'),
-      path.join(home, '.config/chromium/DevToolsActivePort'),
-    );
-  } else if (platform === 'win32') {
-    const localAppData = process.env.LOCALAPPDATA || '';
-    possiblePaths.push(
-      path.join(localAppData, 'Google/Chrome/User Data/DevToolsActivePort'),
-      path.join(localAppData, 'Chromium/User Data/DevToolsActivePort'),
-    );
+  if (discovered?.wsPath) {
+    console.log(`[CDP Proxy] 从 DevToolsActivePort 发现端口: ${discovered.port} (带 wsPath)`);
+  } else if (discovered) {
+    console.log(`[CDP Proxy] 扫描发现浏览器调试端口: ${discovered.port}`);
   }
 
-  for (const p of possiblePaths) {
-    try {
-      const content = fs.readFileSync(p, 'utf-8').trim();
-      const lines = content.split('\n');
-      const port = parseInt(lines[0]);
-      if (port > 0 && port < 65536) {
-        const ok = await checkPort(port);
-        if (ok) {
-          // 第二行是带 UUID 的 WebSocket 路径（如 /devtools/browser/xxx-xxx）
-          // 非显式 --remote-debugging-port 启动时，Chrome 可能只接受此路径
-          const wsPath = lines[1] || null;
-          console.log(`[CDP Proxy] 从 DevToolsActivePort 发现端口: ${port}${wsPath ? ' (带 wsPath)' : ''}`);
-          return { port, wsPath };
-        }
-      }
-    } catch { /* 文件不存在，继续 */ }
-  }
-
-  // 2. 扫描常用端口
-  const commonPorts = [9222, 9229, 9333];
-  for (const port of commonPorts) {
-    const ok = await checkPort(port);
-    if (ok) {
-      console.log(`[CDP Proxy] 扫描发现 Chrome 调试端口: ${port}`);
-      return { port, wsPath: null };
-    }
-  }
-
-  return null;
+  return discovered;
 }
 
-// 用 TCP 探测端口是否监听——避免 WebSocket 连接触发 Chrome 安全弹窗
-// （WebSocket 探测会被 Chrome 视为调试连接，弹出授权对话框）
+// 用 TCP 探测端口是否监听——避免 WebSocket 连接触发浏览器安全弹窗
+// （WebSocket 探测会被浏览器视为调试连接，弹出授权对话框）
 function checkPort(port) {
   return new Promise((resolve) => {
     const socket = net.createConnection(port, '127.0.0.1');
@@ -110,30 +71,27 @@ function getWebSocketUrl(port, wsPath) {
 }
 
 // --- WebSocket 连接管理 ---
-let chromePort = null;
-let chromeWsPath = null;
+let browserPort = null;
+let browserWsPath = null;
 
 let connectingPromise = null;
 async function connect() {
   if (ws && (ws.readyState === WS.OPEN || ws.readyState === 1)) return;
   if (connectingPromise) return connectingPromise;  // 复用进行中的连接
 
-  if (!chromePort) {
-    const discovered = await discoverChromePort();
+  if (!browserPort) {
+    const discovered = await discoverBrowserPort();
     if (!discovered) {
       throw new Error(
-        'Chrome 未开启远程调试端口。请用以下方式启动 Chrome：\n' +
-        '  macOS: /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome --remote-debugging-port=9222\n' +
-        '  Linux: google-chrome --remote-debugging-port=9222\n' +
-        '  或在 chrome://flags 中搜索 "remote debugging" 并启用'
+        '未检测到 Chrome/Edge 远程调试端口。请先在浏览器中启用 remote debugging，或使用 --remote-debugging-port 启动浏览器。'
       );
     }
-    chromePort = discovered.port;
-    chromeWsPath = discovered.wsPath;
+    browserPort = discovered.port;
+    browserWsPath = discovered.wsPath;
   }
 
-  const wsUrl = getWebSocketUrl(chromePort, chromeWsPath);
-  if (!wsUrl) throw new Error('无法获取 Chrome WebSocket URL');
+  const wsUrl = getWebSocketUrl(browserPort, browserWsPath);
+  if (!wsUrl) throw new Error('无法获取浏览器 WebSocket URL');
 
   return connectingPromise = new Promise((resolve, reject) => {
     ws = new WS(wsUrl);
@@ -141,15 +99,15 @@ async function connect() {
     const onOpen = () => {
       cleanup();
       connectingPromise = null;
-      console.log(`[CDP Proxy] 已连接 Chrome (端口 ${chromePort})`);
+      console.log(`[CDP Proxy] 已连接浏览器 (端口 ${browserPort})`);
       resolve();
     };
     const onError = (e) => {
       cleanup();
       connectingPromise = null;
       ws = null;
-      chromePort = null;
-      chromeWsPath = null;
+      browserPort = null;
+      browserWsPath = null;
       const msg = e.message || e.error?.message || '连接失败';
       console.error('[CDP Proxy] 连接错误:', msg, '（端口缓存已清除，下次将重新发现）');
       reject(new Error(msg));
@@ -157,8 +115,8 @@ async function connect() {
     const onClose = () => {
       console.log('[CDP Proxy] 连接断开');
       ws = null;
-      chromePort = null; // 重置端口缓存，下次连接重新发现
-      chromeWsPath = null;
+      browserPort = null; // 重置端口缓存，下次连接重新发现
+      browserWsPath = null;
       sessions.clear();
       managedTabs.clear();
     };
@@ -170,7 +128,7 @@ async function connect() {
         const { sessionId, targetInfo } = msg.params;
         sessions.set(targetInfo.targetId, sessionId);
       }
-      // 拦截页面对 Chrome 调试端口的探测请求（反风控）
+      // 拦截页面对浏览器调试端口的探测请求（反风控）
       if (msg.method === 'Fetch.requestPaused') {
         const { requestId, sessionId: sid } = msg.params;
         sendCDP('Fetch.failRequest', { requestId, errorReason: 'ConnectionRefused' }, sid).catch(() => {});
@@ -236,15 +194,15 @@ async function ensureSession(targetId) {
   throw new Error('attach 失败: ' + JSON.stringify(resp.error));
 }
 
-// 拦截页面对 Chrome 调试端口的探测（反风控）
-// 只拦截 127.0.0.1:{chromePort} 的请求，不影响其他任何本地服务
+// 拦截页面对浏览器调试端口的探测（反风控）
+// 只拦截 127.0.0.1:{browserPort} 的请求，不影响其他任何本地服务
 async function enablePortGuard(sessionId) {
-  if (!chromePort || portGuardedSessions.has(sessionId)) return;
+  if (!browserPort || portGuardedSessions.has(sessionId)) return;
   try {
     await sendCDP('Fetch.enable', {
       patterns: [
-        { urlPattern: `http://127.0.0.1:${chromePort}/*`, requestStage: 'Request' },
-        { urlPattern: `http://localhost:${chromePort}/*`, requestStage: 'Request' },
+        { urlPattern: `http://127.0.0.1:${browserPort}/*`, requestStage: 'Request' },
+        { urlPattern: `http://localhost:${browserPort}/*`, requestStage: 'Request' },
       ]
     }, sessionId);
     portGuardedSessions.add(sessionId);
@@ -327,10 +285,17 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
 
   try {
-    // /health 不需要连接 Chrome
+    // /health 不需要连接浏览器
     if (pathname === '/health') {
       const connected = ws && (ws.readyState === WS.OPEN || ws.readyState === 1);
-      res.end(JSON.stringify({ status: 'ok', connected, sessions: sessions.size, managedTabs: managedTabs.size, chromePort }));
+      res.end(JSON.stringify({
+        status: 'ok',
+        connected,
+        sessions: sessions.size,
+        managedTabs: managedTabs.size,
+        browserPort,
+        chromePort: browserPort,
+      }));
       return;
     }
 
@@ -621,7 +586,7 @@ async function main() {
 
   server.listen(PORT, '127.0.0.1', () => {
     console.log(`[CDP Proxy] 运行在 http://localhost:${PORT}`);
-    // 启动时尝试连接 Chrome（非阻塞）
+    // 启动时尝试连接浏览器（非阻塞）
     connect().catch(e => console.error('[CDP Proxy] 初始连接失败:', e.message, '（将在首次请求时重试）'));
   });
 

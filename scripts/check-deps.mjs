@@ -8,6 +8,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { discoverBrowserDebugEndpoint } from './lib/browser-paths.mjs';
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PROXY_SCRIPT = path.join(ROOT, 'scripts', 'cdp-proxy.mjs');
 const PROXY_PORT = Number(process.env.CDP_PROXY_PORT || 3456);
@@ -35,51 +37,16 @@ function checkPort(port, host = '127.0.0.1', timeoutMs = 2000) {
   });
 }
 
-// --- Chrome 调试端口检测（DevToolsActivePort 多路径 + 常见端口回退） ---
+// --- 浏览器调试端口检测（DevToolsActivePort 多路径 + 常见端口回退） ---
 
-function activePortFiles() {
-  const home = os.homedir();
-  const localAppData = process.env.LOCALAPPDATA || '';
-  switch (os.platform()) {
-    case 'darwin':
-      return [
-        path.join(home, 'Library/Application Support/Google/Chrome/DevToolsActivePort'),
-        path.join(home, 'Library/Application Support/Google/Chrome Canary/DevToolsActivePort'),
-        path.join(home, 'Library/Application Support/Chromium/DevToolsActivePort'),
-      ];
-    case 'linux':
-      return [
-        path.join(home, '.config/google-chrome/DevToolsActivePort'),
-        path.join(home, '.config/chromium/DevToolsActivePort'),
-      ];
-    case 'win32':
-      return [
-        path.join(localAppData, 'Google/Chrome/User Data/DevToolsActivePort'),
-        path.join(localAppData, 'Chromium/User Data/DevToolsActivePort'),
-      ];
-    default:
-      return [];
-  }
-}
-
-async function detectChromePort() {
-  // 优先从 DevToolsActivePort 文件读取
-  for (const filePath of activePortFiles()) {
-    try {
-      const lines = fs.readFileSync(filePath, 'utf8').trim().split(/\r?\n/).filter(Boolean);
-      const port = parseInt(lines[0], 10);
-      if (port > 0 && port < 65536 && await checkPort(port)) {
-        return port;
-      }
-    } catch (_) {}
-  }
-  // 回退：探测常见端口
-  for (const port of [9222, 9229, 9333]) {
-    if (await checkPort(port)) {
-      return port;
-    }
-  }
-  return null;
+async function detectBrowserPort() {
+  const endpoint = await discoverBrowserDebugEndpoint({
+    platform: os.platform(),
+    homeDir: os.homedir(),
+    localAppData: process.env.LOCALAPPDATA || '',
+    checkPortImpl: checkPort,
+  });
+  return endpoint?.port ?? null;
 }
 
 // --- CDP Proxy 启动与等待 ---
@@ -128,12 +95,12 @@ async function ensureProxy() {
       return true;
     }
     if (i === 1) {
-      console.log('⚠️  Chrome 可能有授权弹窗，请点击「允许」后等待连接...');
+      console.log('⚠️  浏览器可能有授权弹窗，请点击「允许」后等待连接...');
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
 
-  console.log('❌ 连接超时，请检查 Chrome 调试设置');
+  console.log('❌ 连接超时，请检查 Chrome/Edge 调试设置');
   console.log(`  日志：${path.join(os.tmpdir(), 'cdp-proxy.log')}`);
   return false;
 }
@@ -143,12 +110,12 @@ async function ensureProxy() {
 async function main() {
   checkNode();
 
-  const chromePort = await detectChromePort();
-  if (!chromePort) {
-    console.log('chrome: not connected — 请确保 Chrome 已打开，然后访问 chrome://inspect/#remote-debugging 并勾选 Allow remote debugging');
+  const browserPort = await detectBrowserPort();
+  if (!browserPort) {
+    console.log('browser: not connected — 请确保 Chrome 或 Edge 已打开，并启用 remote debugging');
     process.exit(1);
   }
-  console.log(`chrome: ok (port ${chromePort})`);
+  console.log(`browser: ok (port ${browserPort})`);
 
   const proxyOk = await ensureProxy();
   if (!proxyOk) {
