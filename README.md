@@ -36,15 +36,15 @@ AI Agent 原本的联网能力（WebSearch、WebFetch）缺少调度策略和浏
 | 能力 | 说明 |
 |------|------|
 | 联网工具自动选择 | WebSearch / WebFetch / curl / Jina / CDP，按场景自主判断，可任意组合 |
-| CDP Proxy 浏览器操作 | 直连用户日常 Chrome，天然携带登录态，支持动态页面、交互操作、视频截帧 |
+| CDP Proxy 浏览器操作 | 直连用户日常 Chrome / Edge，天然携带登录态，支持动态页面、交互操作、视频截帧 |
 | 三种点击方式 | `/click`（JS click）、`/clickAt`（CDP 真实鼠标事件）、`/setFiles`（文件上传） |
-| 本地 Chrome 书签/历史检索 | `find-url.mjs` 查询公网搜不到的目标（内部系统）或用户访问过的页面，支持关键词/时间窗/访问频度排序 |
+| 本地 Chrome / Edge 书签/历史检索 | `find-url.mjs` 查询公网搜不到的目标（内部系统）或用户访问过的页面，支持关键词/时间窗/访问频度排序 |
 | 并行分治 | 多目标时分发子 Agent 并行执行，共享一个 Proxy，tab 级隔离 |
 | 站点经验积累 | 按域名存储操作经验（URL 模式、平台特征、已知陷阱），跨 session 复用 |
 | 媒体提取 | 从 DOM 直取图片/视频 URL，或对视频任意时间点截帧分析 |
 
 **v2.5.0 更新：**
-- **本地 Chrome 资源检索** — 新增 `scripts/find-url.mjs`，从本地 Chrome 书签/历史按关键词/时间窗/访问频度定位 URL。典型场景：用户提到组织内部系统（"我们的 XX 平台"等公网搜不到的目标）、回查之前访问过但不记得地址的页面、查看最近高频访问网站等（场景感谢 @MVPGFC 在 #60 提出）
+- **本地浏览器资源检索** — 新增 `scripts/find-url.mjs`，从本地 Chrome / Edge 书签/历史按关键词/时间窗/访问频度定位 URL。典型场景：用户提到组织内部系统（"我们的 XX 平台"等公网搜不到的目标）、回查之前访问过但不记得地址的页面、查看最近高频访问网站等（场景感谢 @MVPGFC 在 #60 提出）
 
 <details><summary>v2.4.3 更新</summary>
 
@@ -103,9 +103,9 @@ git clone https://github.com/eze-is/web-access ~/.claude/skills/web-access
 
 ## 前置配置（CDP 模式）
 
-CDP 模式需要 **Node.js 22+** 和 Chrome 开启远程调试：
+CDP 模式需要 **Node.js 22+** 和 Chrome / Edge 开启远程调试：
 
-1. Chrome 地址栏打开 `chrome://inspect/#remote-debugging`
+1. 在浏览器的 inspect / remote debugging 页面开启远程调试
 2. 勾选 **Allow remote debugging for this browser instance**（可能需要重启浏览器）
 
 环境检查（Agent 运行时会自动完成前置检查，无需手动执行）：
@@ -118,7 +118,7 @@ node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 
 ## CDP Proxy API
 
-Proxy 通过 WebSocket 直连 Chrome（兼容 `chrome://inspect` 方式，无需命令行参数启动），提供 HTTP API：
+Proxy 通过 WebSocket 直连 Chrome / Edge（兼容 inspect remote debugging 方式，无需命令行参数启动），提供 HTTP API：
 
 ```bash
 # 启动（Agent 会自动管理 Proxy 生命周期，无需手动启动）

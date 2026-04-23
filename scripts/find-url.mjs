@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// find-url - 从本地 Chrome 书签/历史中检索 URL
+// find-url - 从本地 Chromium 系浏览器书签/历史中检索 URL
 // 用于定位公网搜索覆盖不到的目标（组织内部系统、SSO 后台、内网域名等）。
 //
 // 用法：
@@ -22,6 +22,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
+
+import { browserUserDataEntries } from './lib/browser-paths.mjs';
 
 // --- 参数解析 -----------------------------------------------------------
 function parseArgs(argv) {
@@ -58,15 +60,13 @@ function parseSince(s) {
 function die(msg) { console.error(msg); process.exit(1); }
 function printUsage() { console.error(fs.readFileSync(new URL(import.meta.url)).toString().split('\n').slice(1, 19).map(l => l.replace(/^\/\/ ?/, '')).join('\n')); }
 
-// --- Chrome 用户数据目录（跨平台） ---------------------------------------
-function getChromeDataDir() {
-  const home = os.homedir();
-  switch (os.platform()) {
-    case 'darwin': return path.join(home, 'Library/Application Support/Google/Chrome');
-    case 'linux':  return path.join(home, '.config/google-chrome');
-    case 'win32':  return path.join(process.env.LOCALAPPDATA || '', 'Google/Chrome/User Data');
-    default: return null;
-  }
+// --- Chromium 系浏览器用户数据目录（跨平台） ------------------------------
+function getBrowserDataEntries() {
+  return browserUserDataEntries({
+    platform: os.platform(),
+    homeDir: os.homedir(),
+    localAppData: process.env.LOCALAPPDATA || '',
+  }).filter(({ dir }) => fs.existsSync(dir));
 }
 
 // --- Profile 枚举 -------------------------------------------------------
@@ -81,7 +81,7 @@ function listProfiles(dataDir) {
 }
 
 // --- 书签检索 -----------------------------------------------------------
-function searchBookmarks(profileDir, profileName, keywords) {
+function searchBookmarks(profileDir, browser, profileName, keywords) {
   const file = path.join(profileDir, 'Bookmarks');
   if (!fs.existsSync(file)) return [];
   let data;
@@ -95,7 +95,7 @@ function searchBookmarks(profileDir, profileName, keywords) {
     if (node.type === 'url') {
       const hay = `${node.name || ''} ${node.url || ''}`.toLowerCase();
       if (needles.every(n => hay.includes(n))) {
-        out.push({ profile: profileName, name: node.name || '', url: node.url || '', folder: trail.join(' / ') });
+        out.push({ browser, profile: profileName, name: node.name || '', url: node.url || '', folder: trail.join(' / ') });
       }
     }
     if (Array.isArray(node.children)) {
@@ -110,10 +110,10 @@ function searchBookmarks(profileDir, profileName, keywords) {
 // --- 历史检索（SQLite 运行时锁定，需 copy 到 tmp） ------------------------
 const WEBKIT_EPOCH_DIFF_US = 11644473600000000n;  // 1601→1970 微秒差
 
-function searchHistory(profileDir, profileName, keywords, since, limit, sort) {
+function searchHistory(profileDir, browser, profileName, keywords, since, limit, sort) {
   const src = path.join(profileDir, 'History');
   if (!fs.existsSync(src)) return [];
-  const tmp = path.join(os.tmpdir(), `chrome-history-${process.pid}-${Date.now()}.sqlite`);
+  const tmp = path.join(os.tmpdir(), `browser-history-${process.pid}-${Date.now()}.sqlite`);
   try {
     fs.copyFileSync(src, tmp);
     const conds = ['last_visit_time > 0'];
@@ -138,7 +138,7 @@ function searchHistory(profileDir, profileName, keywords, since, limit, sort) {
     const raw = execFileSync('sqlite3', ['-separator', '\t', tmp, sql], { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 });
     return raw.trim().split('\n').filter(Boolean).map(line => {
       const [title, url, visit, visit_count] = line.split('\t');
-      return { profile: profileName, title, url, visit, visit_count: parseInt(visit_count, 10) };
+      return { browser, profile: profileName, title, url, visit, visit_count: parseInt(visit_count, 10) };
     });
   } catch (e) {
     if (e.code === 'ENOENT') die('未找到 sqlite3 命令。macOS/Linux 通常自带；Windows 可用 `winget install sqlite.sqlite` 或从 https://sqlite.org/download.html 下载后加入 PATH。');
@@ -152,22 +152,31 @@ function searchHistory(profileDir, profileName, keywords, since, limit, sort) {
 // 用 `|` 作字段分隔符；字段内含 `|` 的替换成 `│`（全宽竖线）避免歧义
 const clean = s => String(s ?? '').replaceAll('|', '│').trim();
 
-function printBookmarks(items, multiProfile) {
+function formatSourceLabel(item, showBrowser, showProfile) {
+  const parts = [];
+  if (showBrowser) parts.push(clean(item.browser));
+  if (showProfile) parts.push(clean(item.profile));
+  return parts.length ? '@' + parts.join('/') : null;
+}
+
+function printBookmarks(items, showBrowser, showProfile) {
   console.log(`[书签] ${items.length} 条`);
   for (const b of items) {
     const segs = [clean(b.name) || '(无标题)', clean(b.url)];
     if (b.folder) segs.push(clean(b.folder));
-    if (multiProfile) segs.push('@' + clean(b.profile));
+    const sourceLabel = formatSourceLabel(b, showBrowser, showProfile);
+    if (sourceLabel) segs.push(sourceLabel);
     console.log('  ' + segs.join(' | '));
   }
 }
 
-function printHistory(items, multiProfile, sortLabel) {
+function printHistory(items, showBrowser, showProfile, sortLabel) {
   console.log(`[历史] ${items.length} 条（${sortLabel}）`);
   for (const h of items) {
     const segs = [clean(h.title) || '(无标题)', clean(h.url), h.visit];
     if (h.visit_count > 1) segs.push(`visits=${h.visit_count}`);
-    if (multiProfile) segs.push('@' + clean(h.profile));
+    const sourceLabel = formatSourceLabel(h, showBrowser, showProfile);
+    if (sourceLabel) segs.push(sourceLabel);
     console.log('  ' + segs.join(' | '));
   }
 }
@@ -175,20 +184,22 @@ function printHistory(items, multiProfile, sortLabel) {
 // --- main ---------------------------------------------------------------
 const args = parseArgs(process.argv.slice(2));
 
-const dataDir = getChromeDataDir();
-if (!dataDir || !fs.existsSync(dataDir)) die('未找到 Chrome 用户数据目录');
+const dataEntries = getBrowserDataEntries();
+if (!dataEntries.length) die('未找到 Chrome、Chromium 或 Edge 用户数据目录');
 
-const profiles = listProfiles(dataDir);
 const doBookmarks = args.only !== 'history';
 const doHistory   = args.only !== 'bookmarks';
 
 const bookmarks = [];
 const history = [];
-for (const p of profiles) {
-  const pDir = path.join(dataDir, p.dir);
-  if (!fs.existsSync(pDir)) continue;
-  if (doBookmarks) bookmarks.push(...searchBookmarks(pDir, p.name, args.keywords));
-  if (doHistory)   history.push(...searchHistory(pDir, p.name, args.keywords, args.since, args.limit === 0 ? 0 : args.limit * 2, args.sort));
+for (const entry of dataEntries) {
+  const profiles = listProfiles(entry.dir);
+  for (const p of profiles) {
+    const pDir = path.join(entry.dir, p.dir);
+    if (!fs.existsSync(pDir)) continue;
+    if (doBookmarks) bookmarks.push(...searchBookmarks(pDir, entry.browser, p.name, args.keywords));
+    if (doHistory) history.push(...searchHistory(pDir, entry.browser, p.name, args.keywords, args.since, args.limit === 0 ? 0 : args.limit * 2, args.sort));
+  }
 }
 
 // 历史跨 profile 合并后按指定 sort 重排 + 切顶
@@ -200,14 +211,16 @@ if (args.sort === 'visits') {
 const bookmarksOut = args.limit === 0 ? bookmarks : bookmarks.slice(0, args.limit);
 const historyOut   = args.limit === 0 ? history   : history.slice(0, args.limit);
 
-// 仅当结果真的横跨多个 profile 时，才输出 @profile 标注（空 profile 不算）
+// 仅当结果真的横跨多个浏览器 / profile 时，才输出来源标注
+const seenBrowsers = new Set([...bookmarksOut, ...historyOut].map(x => x.browser).filter(Boolean));
 const seenProfiles = new Set([...bookmarksOut, ...historyOut].map(x => x.profile));
+const showBrowser = seenBrowsers.size > 1;
 const showProfile = seenProfiles.size > 1;
 
 const sortLabel = args.sort === 'visits' ? '按访问次数' : '按最近访问';
-if (doBookmarks) printBookmarks(bookmarksOut, showProfile);
+if (doBookmarks) printBookmarks(bookmarksOut, showBrowser, showProfile);
 if (doBookmarks && doHistory) console.log();
-if (doHistory)   printHistory(historyOut, showProfile, sortLabel);
+if (doHistory)   printHistory(historyOut, showBrowser, showProfile, sortLabel);
 
 if (!args.keywords.length && doBookmarks && !doHistory) {
   console.error('\n提示：书签无时间维度，无关键词查询无意义。加关键词或切换 --only history。');
