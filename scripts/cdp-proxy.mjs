@@ -104,9 +104,34 @@ function checkPort(port) {
   });
 }
 
-function getWebSocketUrl(port, wsPath) {
-  if (wsPath) return `ws://127.0.0.1:${port}${wsPath}`;
-  return `ws://127.0.0.1:${port}/devtools/browser`;
+async function getWebSocketUrl(port, wsPath) {
+  // 优先从 HTTP API 获取最新 wsPath（避免 DevToolsActivePort 文件过时）
+  try {
+    const url = await new Promise((resolve, reject) => {
+      const req = http.get(`http://127.0.0.1:${port}/json/version`, { timeout: 2000 }, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            const json = JSON.parse(data);
+            if (json.webSocketDebuggerUrl) {
+              resolve(json.webSocketDebuggerUrl.replace('ws://[::1]', 'ws://127.0.0.1'));
+            } else {
+              reject(new Error('无 webSocketDebuggerUrl'));
+            }
+          } catch (e) { reject(e); }
+        });
+      });
+      req.on('error', reject);
+      req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+    });
+    console.log(`[CDP Proxy] 从 HTTP API 获取 wsUrl: ${url}`);
+    return url;
+  } catch {
+    // 回退到文件中的 wsPath
+    if (wsPath) return `ws://127.0.0.1:${port}${wsPath}`;
+    return `ws://127.0.0.1:${port}/devtools/browser`;
+  }
 }
 
 // --- WebSocket 连接管理 ---
@@ -132,7 +157,7 @@ async function connect() {
     chromeWsPath = discovered.wsPath;
   }
 
-  const wsUrl = getWebSocketUrl(chromePort, chromeWsPath);
+  const wsUrl = await getWebSocketUrl(chromePort, chromeWsPath);
   if (!wsUrl) throw new Error('无法获取 Chrome WebSocket URL');
 
   return connectingPromise = new Promise((resolve, reject) => {
