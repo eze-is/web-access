@@ -552,6 +552,251 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    // GET /extract?target=xxx 或 /extract?url=xxx - 一次性提取页面结构化信息
+    // 传 target：对已打开的 tab 提取；传 url：自动开 tab → 提取 → 关闭
+    else if (pathname === '/extract') {
+      let targetId = q.target;
+      let autoClose = false;
+
+      // 如果传了 url 而没有 target，自动创建 tab
+      if (!targetId && q.url) {
+        const createResp = await sendCDP('Target.createTarget', { url: q.url, background: true });
+        targetId = createResp.result.targetId;
+        autoClose = true;
+        try {
+          const sid = await ensureSession(targetId);
+          await waitForLoad(sid);
+          // 额外等待动态内容渲染
+          await new Promise(r => setTimeout(r, 1500));
+        } catch { /* 非致命 */ }
+      }
+
+      if (!targetId) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: '需要 target 或 url 参数' }));
+        return;
+      }
+
+      const sid = await ensureSession(targetId);
+
+      // 先滚动到底部触发懒加载，再滚回顶部
+      await sendCDP('Runtime.evaluate', {
+        expression: 'window.scrollTo(0, document.body.scrollHeight)',
+        returnByValue: true,
+      }, sid);
+      await new Promise(r => setTimeout(r, 1000));
+      await sendCDP('Runtime.evaluate', {
+        expression: 'window.scrollTo(0, 0)',
+        returnByValue: true,
+      }, sid);
+
+      const extractJS = `(() => {
+        const result = {};
+
+        // === 基础信息 ===
+        result.title = document.title || '';
+        result.url = location.href;
+
+        // === Meta 信息 ===
+        const meta = {};
+        const metaTags = document.querySelectorAll('meta');
+        for (const m of metaTags) {
+          const name = m.getAttribute('name') || m.getAttribute('property') || m.getAttribute('itemprop') || '';
+          const content = m.getAttribute('content') || '';
+          if (name && content) {
+            meta[name] = content;
+          }
+        }
+        // canonical URL
+        const canonical = document.querySelector('link[rel="canonical"]');
+        if (canonical) meta['canonical'] = canonical.getAttribute('href') || '';
+        result.meta = meta;
+
+        // === 时间信息 ===
+        const times = [];
+        // <time> 标签
+        document.querySelectorAll('time').forEach(t => {
+          const dt = t.getAttribute('datetime') || t.textContent.trim();
+          if (dt) times.push({ source: 'time_tag', value: dt, text: t.textContent.trim() });
+        });
+        // meta 中的时间
+        const timeMetaNames = [
+          'article:published_time', 'article:modified_time',
+          'og:updated_time', 'datePublished', 'dateModified',
+          'date', 'publish_date', 'lastmod',
+          'DC.date.issued', 'DC.date.created',
+        ];
+        for (const name of timeMetaNames) {
+          if (meta[name]) times.push({ source: 'meta:' + name, value: meta[name] });
+        }
+        // JSON-LD 中的时间
+        document.querySelectorAll('script[type="application/ld+json"]').forEach(s => {
+          try {
+            const ld = JSON.parse(s.textContent);
+            const items = Array.isArray(ld) ? ld : [ld];
+            for (const item of items) {
+              if (item.datePublished) times.push({ source: 'ld+json:datePublished', value: item.datePublished });
+              if (item.dateModified) times.push({ source: 'ld+json:dateModified', value: item.dateModified });
+              if (item.dateCreated) times.push({ source: 'ld+json:dateCreated', value: item.dateCreated });
+            }
+          } catch {}
+        });
+        result.times = times;
+
+        // === 正文提取 ===
+        // 优先级：article > main > 最大文本密度块
+        function getTextContent(el) {
+          if (!el) return '';
+          // 移除 script/style/nav/header/footer 的干扰
+          const clone = el.cloneNode(true);
+          clone.querySelectorAll('script, style, nav, header, footer, aside, [role="navigation"], [role="banner"], [role="contentinfo"]').forEach(n => n.remove());
+          return clone.textContent.replace(/\\s+/g, ' ').trim();
+        }
+
+        let bodyText = '';
+        const article = document.querySelector('article');
+        const main = document.querySelector('main, [role="main"]');
+
+        if (article) {
+          bodyText = getTextContent(article);
+        } else if (main) {
+          bodyText = getTextContent(main);
+        }
+
+        // 如果以上都没拿到足够内容，用文本密度算法找最大内容块
+        if (bodyText.length < 200) {
+          const candidates = document.querySelectorAll('div, section');
+          let best = null, bestLen = 0;
+          for (const c of candidates) {
+            const text = getTextContent(c);
+            // 过滤太短或太多链接的块（导航区域）
+            const linkText = Array.from(c.querySelectorAll('a')).map(a => a.textContent).join('').length;
+            const textLen = text.length;
+            const linkRatio = textLen > 0 ? linkText / textLen : 1;
+            if (textLen > bestLen && linkRatio < 0.5) {
+              best = text;
+              bestLen = textLen;
+            }
+          }
+          if (best && best.length > bodyText.length) bodyText = best;
+        }
+        result.text = bodyText;
+
+        // === 链接 ===
+        const links = [];
+        const seenHrefs = new Set();
+        document.querySelectorAll('a[href]').forEach(a => {
+          const href = a.href;
+          if (!href || href.startsWith('javascript:') || href === '#') return;
+          if (seenHrefs.has(href)) return;
+          seenHrefs.add(href);
+          links.push({
+            href: href,
+            text: (a.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 200),
+            rel: a.getAttribute('rel') || '',
+          });
+        });
+        result.links = links;
+
+        // === 图片 ===
+        const images = [];
+        const seenImgSrcs = new Set();
+        document.querySelectorAll('img').forEach(img => {
+          const src = img.src || img.getAttribute('data-src') || img.getAttribute('data-original') || img.getAttribute('data-lazy-src') || '';
+          if (!src || seenImgSrcs.has(src)) return;
+          seenImgSrcs.add(src);
+          images.push({
+            src: src,
+            alt: (img.alt || '').slice(0, 200),
+            width: img.naturalWidth || img.width || 0,
+            height: img.naturalHeight || img.height || 0,
+          });
+        });
+        // background-image（仅检查常见容器）
+        document.querySelectorAll('[style*="background-image"]').forEach(el => {
+          const match = el.style.backgroundImage.match(/url\\(["']?(.+?)["']?\\)/);
+          if (match && match[1] && !seenImgSrcs.has(match[1])) {
+            seenImgSrcs.add(match[1]);
+            images.push({ src: match[1], alt: '', width: 0, height: 0, type: 'background' });
+          }
+        });
+        result.images = images;
+
+        // === 视频 ===
+        const videos = [];
+        document.querySelectorAll('video').forEach(v => {
+          const src = v.src || v.querySelector('source')?.src || '';
+          videos.push({
+            src: src,
+            poster: v.poster || '',
+            duration: v.duration || 0,
+          });
+        });
+        // iframe 嵌入视频（YouTube / Bilibili 等）
+        document.querySelectorAll('iframe[src]').forEach(f => {
+          const src = f.src;
+          if (/youtube|youtu\\.be|bilibili|vimeo|dailymotion|tiktok/i.test(src)) {
+            videos.push({ src: src, poster: '', duration: 0, type: 'embed' });
+          }
+        });
+        result.videos = videos;
+
+        // === 音频 ===
+        const audios = [];
+        document.querySelectorAll('audio').forEach(a => {
+          const src = a.src || a.querySelector('source')?.src || '';
+          if (src) audios.push({ src: src, duration: a.duration || 0 });
+        });
+        result.audios = audios;
+
+        // === 结构化数据（JSON-LD） ===
+        const jsonLd = [];
+        document.querySelectorAll('script[type="application/ld+json"]').forEach(s => {
+          try { jsonLd.push(JSON.parse(s.textContent)); } catch {}
+        });
+        if (jsonLd.length > 0) result.jsonLd = jsonLd;
+
+        // === 统计摘要 ===
+        result.stats = {
+          links: links.length,
+          images: images.length,
+          videos: videos.length,
+          audios: audios.length,
+          textLength: bodyText.length,
+        };
+
+        return JSON.stringify(result);
+      })()`;
+
+      const resp = await sendCDP('Runtime.evaluate', {
+        expression: extractJS,
+        returnByValue: true,
+        awaitPromise: true,
+      }, sid);
+
+      // 自动关闭 tab
+      if (autoClose) {
+        try {
+          await sendCDP('Target.closeTarget', { targetId });
+          sessions.delete(targetId);
+        } catch { /* 非致命 */ }
+      }
+
+      if (resp.result?.result?.value) {
+        try {
+          const parsed = JSON.parse(resp.result.result.value);
+          res.end(JSON.stringify(parsed, null, 2));
+        } catch {
+          res.end(resp.result.result.value);
+        }
+      } else if (resp.result?.exceptionDetails) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: resp.result.exceptionDetails.text }));
+      } else {
+        res.end(JSON.stringify(resp.result));
+      }
+    }
+
     // GET /info?target=xxx - 获取页面信息
     else if (pathname === '/info') {
       const sid = await ensureSession(q.target);
@@ -578,6 +823,7 @@ const server = http.createServer(async (req, res) => {
           '/click?target=': 'POST body=CSS选择器 - 点击元素',
           '/scroll?target=&y=&direction=': 'GET - 滚动页面',
           '/screenshot?target=&file=': 'GET - 截图',
+          '/extract?target=|url=': 'GET - 一次性提取页面结构化信息（链接/图片/视频/正文/时间等）',
         },
       }));
     }
