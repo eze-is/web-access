@@ -102,21 +102,6 @@ async function discoverChromePort(mode = 'main') {
       }
     } catch { /* 文件不存在，继续 */ }
   }
-
-  if (mode === 'dedicated') {
-    return null;
-  }
-
-  // 2. 扫描常用端口
-  const commonPorts = [9222, 9229, 9333];
-  for (const port of commonPorts) {
-    const ok = await checkPort(port);
-    if (ok) {
-      console.log(`[CDP Proxy] 扫描发现浏览器调试端口: ${port}`);
-      return { port, wsPath: null };
-    }
-  }
-
   return null;
 }
 
@@ -402,17 +387,20 @@ const server = http.createServer(async (req, res) => {
     // /health 不需要连接浏览器
     if (pathname === '/health') {
       const connected = ws && (ws.readyState === WS.OPEN || ws.readyState === 1);
-<<<<<<< HEAD
-      res.end(JSON.stringify({ status: 'ok', connected, sessions: sessions.size, managedTabs: managedTabs.size, chromePort }));
-=======
-      res.end(JSON.stringify({ status: 'ok', connected, browserMode: BROWSER_MODE, sessions: sessions.size, chromePort }));
+      res.end(JSON.stringify({
+        status: 'ok',
+        connected,
+        browserMode: BROWSER_MODE,
+        sessions: sessions.size,
+        managedTabs: managedTabs.size,
+        chromePort,
+      }));
       return;
     }
 
     if (pathname === '/shutdown') {
       res.end(JSON.stringify({ status: 'ok', shuttingDown: true }));
       setTimeout(() => shutdown(0), 50).unref?.();
->>>>>>> 7d3fa59 (feat(cdp): add dedicated browser mode and standardize main browser wording)
       return;
     }
 

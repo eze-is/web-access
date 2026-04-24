@@ -14,51 +14,75 @@ metadata:
 
 ## 前置检查
 
-在开始联网操作前，先检查 CDP 模式可用性：
+在开始联网操作前，先执行：
 
 ```bash
 node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 ```
 
-必须遵循以下模式决策流程：
+必须严格按以下流程处理：
 
-1. **首次进入任务或未确定模式时，先执行默认检查命令**：`node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"`
-2. 若检查结果显示 **主力浏览器和专用浏览器都可用**：默认走 **专用浏览器（dedicated）**。只有用户明确要求主力浏览器时才走主力浏览器。
-3. 若只有一侧可用：直接使用可用的一侧。
-4. 若两侧都不可用：再提示用户选择要启用主力浏览器还是专用浏览器，并按选择引导配置。
+1. 若检查结果显示浏览器 **可用**：
+   - 若 **main browser** 和 **dedicated** 都可用：默认走 **dedicated**。只有用户明确要求主力浏览器时才走 `main browser`。
+   - 若只有一侧可用：直接使用可用的一侧。
+   - 选定模式后，立即开始工作，不要继续让用户做额外配置。
+2. 若检查结果显示两侧都 **不可用**：
+   - 先向用户解释两种模式的差异，让用户选 `main browser` 或 `dedicated`。
+   - 只引导用户配置他选中的那一种，不要两种都讲。
+   - 配置完成后，重新执行检查命令；检查通过后立即开始工作。
 
-用户明确要求专用浏览器时，或需要固定专用浏览器时，检查命令应显式带参数：
+当需要用户选择模式时，按下面的对比说明：
 
-```bash
-node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs" --browser dedicated --browser-id <chrome|chrome-canary|chromium|brave|edge|arc>
-```
-未通过时按用户选择给出对应配置流程：
+| 模式 | 适合场景 | 主要优势 | 主要代价 |
+|------|----------|----------|----------|
+| main browser | 需要立刻复用现有登录态，马上执行任务 | 自动继承现有登录态、书签、插件 | 连接时可能需要处理远程调试授权弹窗；Agent 操作和用户自己的浏览器操作不隔离 |
+| 专用浏览器（dedicated） | 追求 autonomous agent 长时间稳定运行，用户不必一直守在电脑旁 | 通常不需要反复确认远程调试授权；Agent 操作和用户日常浏览隔离 | 首次配置需要单独登录常用网站、安装插件、准备 profile |
 
-- **通用前提（两种模式都需要）**：Node.js 22+（使用原生 WebSocket）。
+向用户发起模式选择时，不应只给“1 / 2”两个编号。要直接说明差异、收益和代价，让用户按场景选择：
 
-- **主力浏览器配置**：
+- 需要立刻复用现有登录态、马上完成一次任务：通常选 `main browser`
+- 需要把 Agent 操作和日常使用隔离开、希望长期稳定复用同一套环境：通常选 `专用浏览器（dedicated）`
+
+### main browser
+
 1. 在 Chromium 系浏览器地址栏打开 `chrome://inspect/#remote-debugging`
 2. 勾选 **Allow remote debugging for this browser instance**（可能需要重启浏览器）
-3. 重新执行默认检查：`node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"`
-
-- **专用浏览器（dedicated）配置**：
-1. 先选一个 `browser-id`（`chrome` / `chrome-canary` / `chromium` / `brave` / `edge` / `arc`）
-2. 专用 profile 目录固定为：`$HOME/.web-access/<browser-id>-dedicated-profile`
-3. 启动该专用浏览器实例并带远程调试参数（macOS 示例）：
+3. 完成后重新执行默认检查命令：
 
 ```bash
-open -na "Brave Browser" --args \
-  --remote-debugging-port=9333 \
-  --user-data-dir="$HOME/.web-access/brave-dedicated-profile"
+node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 ```
 
-4. 重新执行 dedicated 检查：
+### 专用浏览器（dedicated）
+
+1. 先选定一个稳定的 `browser-id`：
+
+| browser-id | 浏览器 App 名称 |
+|---|---|
+| `chrome` | `Google Chrome` |
+| `chrome-canary` | `Google Chrome Canary` |
+| `chromium` | `Chromium` |
+| `brave` | `Brave Browser` |
+| `edge` | `Microsoft Edge` |
+| `arc` | `Arc` |
+
+2. 对应的专用 profile 目录固定为：`$HOME/.web-access/<browser-id>-dedicated-profile`
+
+3. 启动该专用浏览器实例并带远程调试参数。macOS 示例：
+
+```bash
+open -na "<浏览器 App 名称>" --args \
+  --remote-debugging-port=9333 \
+  --user-data-dir="$HOME/.web-access/<browser-id>-dedicated-profile"
+```
+
+4. 启动后重新执行 dedicated 检查命令：
 
 ```bash
 node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs" --browser dedicated --browser-id brave
 ```
 
-5. 一旦用户明确要求 dedicated 并进入 dedicated 路径，后续检查与连接保持 dedicated 参数，不要混用默认检查命令。
+已经明确进入 dedicated 路径时，后续检查建议继续显式带上 `--browser dedicated`。`--browser-id` 主要用于帮助检查定位 dedicated profile。
 
 检查通过后并必须在回复中向用户直接展示以下须知，再启动 CDP Proxy 执行操作：
 

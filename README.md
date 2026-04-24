@@ -103,56 +103,32 @@ git clone https://github.com/eze-is/web-access ~/.claude/skills/web-access
 
 ## 前置配置（CDP 模式）
 
-CDP 模式需要 **Node.js 22+** 和浏览器开启远程调试。
-
-先决定用哪种浏览器模式，再进入对应配置：
+CDP 模式需要 **Node.js 22+** 和浏览器开启远程调试。支持两种模式：
 
 | 模式 | 适合场景 | 主要优势 | 主要代价 |
 |------|----------|----------|----------|
-| main browser | 需要立刻复用现有登录态，马上执行任务 | 自动继承现有登录态、书签、插件 | 连接时可能需要处理远程调试授权弹窗；Agent 操作和用户自己的浏览器操作不隔离 |
-| 专用浏览器（dedicated） | 追求 autonomous agent 长时间稳定运行，用户不必一直守在电脑旁 | 通常不需要反复确认远程调试授权；Agent 操作和用户日常浏览隔离 | 首次配置需要单独登录常用网站、安装插件、准备 profile |
+| main browser | 需要立刻复用现有登录态，马上执行任务 | 自动继承现有登录态、书签、插件 | 可能需要处理远程调试授权弹窗；Agent 操作与用户日常浏览不隔离 |
+| 专用浏览器（dedicated） | 追求 autonomous agent 长时间稳定运行 | 通常不需要反复确认调试授权；与日常浏览隔离 | 首次需要单独配置 profile（登录、插件等） |
 
-如果是 Agent 在向用户发起模式选择，不应只给“1 / 2”两个编号。应该把两者的差异、收益和代价直接讲清楚，让用户按自己的场景选择：
-
-- 需要立刻复用现有登录态、马上完成一次任务：通常选 `main browser`
-- 需要把 Agent 操作和日常使用隔离开、希望长期稳定复用同一套环境：通常选 `专用浏览器（dedicated）`
-
-### main browser
-
-1. 在 Chromium 系浏览器地址栏打开 `chrome://inspect/#remote-debugging`
-2. 勾选 **Allow remote debugging for this browser instance**（可能需要重启浏览器）
-
-### 专用浏览器（dedicated）
-
-先选定一个稳定的 `browser-id`：
-
-| browser-id | 浏览器 App 名称 |
-|---|---|
-| `chrome` | `Google Chrome` |
-| `chrome-canary` | `Google Chrome Canary` |
-| `chromium` | `Chromium` |
-| `brave` | `Brave Browser` |
-| `edge` | `Microsoft Edge` |
-| `arc` | `Arc` |
-
-对应的专用 profile 目录固定为：`$HOME/.web-access/<browser-id>-dedicated-profile`
-
-macOS 启动命令示例：
+默认检查命令（推荐）：
 
 ```bash
-open -na "Brave Browser" --args \
-  --remote-debugging-port=9333 \
-  --user-data-dir="$HOME/.web-access/brave-dedicated-profile"
+node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 ```
 
-专用浏览器启动后，可以显式运行 dedicated 检查命令：
+新流程（默认行为）：
+- 先执行默认检查命令
+- 若 main 与 dedicated 都可用：默认选择 dedicated（除非用户明确要求 main）
+- 若只有一侧可用：直接使用可用一侧
+- 若两侧都不可用：提示用户选择模式并按对应流程配置
+
+需要固定 dedicated 路径时：
 
 ```bash
-node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs" --browser dedicated --browser-id brave
-# $CLAUDE_SKILL_DIR 是 skill 加载时自动设置的环境变量
+node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs" --browser dedicated --browser-id <chrome|chrome-canary|chromium|brave|edge|arc>
 ```
 
-默认检查命令 `node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"` 会自动检查 main browser 和专用 profile。已经明确进入专用浏览器路径时，后续检查和连接建议继续带上 `--browser dedicated --browser-id ...`，保持路径一致。
+详细配置步骤（main / dedicated）请以 [SKILL.md](./SKILL.md) 的前置检查章节为准。
 
 ## CDP Proxy API
 
