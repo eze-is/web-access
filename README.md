@@ -36,15 +36,15 @@ AI Agent 原本的联网能力（WebSearch、WebFetch）缺少调度策略和浏
 | 能力 | 说明 |
 |------|------|
 | 联网工具自动选择 | WebSearch / WebFetch / curl / Jina / CDP，按场景自主判断，可任意组合 |
-| CDP Proxy 浏览器操作 | 直连用户日常 Chrome，天然携带登录态，支持动态页面、交互操作、视频截帧 |
+| CDP Proxy 浏览器操作 | 直连用户日常浏览器，天然携带登录态，支持动态页面、交互操作、视频截帧 |
 | 三种点击方式 | `/click`（JS click）、`/clickAt`（CDP 真实鼠标事件）、`/setFiles`（文件上传） |
-| 本地 Chrome 书签/历史检索 | `find-url.mjs` 查询公网搜不到的目标（内部系统）或用户访问过的页面，支持关键词/时间窗/访问频度排序 |
+| 本地浏览器书签/历史检索（Chrome） | `find-url.mjs` 查询公网搜不到的目标（内部系统）或用户访问过的页面，支持关键词/时间窗/访问频度排序 |
 | 并行分治 | 多目标时分发子 Agent 并行执行，共享一个 Proxy，tab 级隔离 |
 | 站点经验积累 | 按域名存储操作经验（URL 模式、平台特征、已知陷阱），跨 session 复用 |
 | 媒体提取 | 从 DOM 直取图片/视频 URL，或对视频任意时间点截帧分析 |
 
 **v2.5.0 更新：**
-- **本地 Chrome 资源检索** — 新增 `scripts/find-url.mjs`，从本地 Chrome 书签/历史按关键词/时间窗/访问频度定位 URL。典型场景：用户提到组织内部系统（"我们的 XX 平台"等公网搜不到的目标）、回查之前访问过但不记得地址的页面、查看最近高频访问网站等（场景感谢 @MVPGFC 在 #60 提出）
+- **本地浏览器资源检索（Chrome）** — 新增 `scripts/find-url.mjs`，从本地浏览器（Chrome）书签/历史按关键词/时间窗/访问频度定位 URL。典型场景：用户提到组织内部系统（"我们的 XX 平台"等公网搜不到的目标）、回查之前访问过但不记得地址的页面、查看最近高频访问网站等（场景感谢 @MVPGFC 在 #60 提出）
 
 <details><summary>v2.4.3 更新</summary>
 
@@ -103,22 +103,60 @@ git clone https://github.com/eze-is/web-access ~/.claude/skills/web-access
 
 ## 前置配置（CDP 模式）
 
-CDP 模式需要 **Node.js 22+** 和 Chrome 开启远程调试：
+CDP 模式需要 **Node.js 22+** 和浏览器开启远程调试。
 
-1. Chrome 地址栏打开 `chrome://inspect/#remote-debugging`
+先决定用哪种浏览器模式，再进入对应配置：
+
+| 模式 | 适合场景 | 主要优势 | 主要代价 |
+|------|----------|----------|----------|
+| main browser | 需要立刻复用现有登录态，马上执行任务 | 自动继承现有登录态、书签、插件 | 连接时可能需要处理远程调试授权弹窗；Agent 操作和用户自己的浏览器操作不隔离 |
+| 专用浏览器（dedicated） | 追求 autonomous agent 长时间稳定运行，用户不必一直守在电脑旁 | 通常不需要反复确认远程调试授权；Agent 操作和用户日常浏览隔离 | 首次配置需要单独登录常用网站、安装插件、准备 profile |
+
+如果是 Agent 在向用户发起模式选择，不应只给“1 / 2”两个编号。应该把两者的差异、收益和代价直接讲清楚，让用户按自己的场景选择：
+
+- 需要立刻复用现有登录态、马上完成一次任务：通常选 `main browser`
+- 需要把 Agent 操作和日常使用隔离开、希望长期稳定复用同一套环境：通常选 `专用浏览器（dedicated）`
+
+### main browser
+
+1. 在 Chromium 系浏览器地址栏打开 `chrome://inspect/#remote-debugging`
 2. 勾选 **Allow remote debugging for this browser instance**（可能需要重启浏览器）
 
-环境检查（Agent 运行时会自动完成前置检查，无需手动执行）：
+### 专用浏览器（dedicated）
+
+先选定一个稳定的 `browser-id`：
+
+| browser-id | 浏览器 App 名称 |
+|---|---|
+| `chrome` | `Google Chrome` |
+| `chrome-canary` | `Google Chrome Canary` |
+| `chromium` | `Chromium` |
+| `brave` | `Brave Browser` |
+| `edge` | `Microsoft Edge` |
+| `arc` | `Arc` |
+
+对应的专用 profile 目录固定为：`$HOME/.web-access/<browser-id>-dedicated-profile`
+
+macOS 启动命令示例：
 
 ```bash
-node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
-# $CLAUDE_SKILL_DIR 是 skill 加载时自动设置的环境变量
-# 手动运行请替换为实际路径，如 ~/.claude/skills/web-access
+open -na "Brave Browser" --args \
+  --remote-debugging-port=9333 \
+  --user-data-dir="$HOME/.web-access/brave-dedicated-profile"
 ```
+
+专用浏览器启动后，可以显式运行 dedicated 检查命令：
+
+```bash
+node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs" --browser dedicated --browser-id brave
+# $CLAUDE_SKILL_DIR 是 skill 加载时自动设置的环境变量
+```
+
+默认检查命令 `node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"` 会自动检查 main browser 和专用 profile。已经明确进入专用浏览器路径时，后续检查和连接建议继续带上 `--browser dedicated --browser-id ...`，保持路径一致。
 
 ## CDP Proxy API
 
-Proxy 通过 WebSocket 直连 Chrome（兼容 `chrome://inspect` 方式，无需命令行参数启动），提供 HTTP API：
+Proxy 通过 WebSocket 直连浏览器（兼容 `chrome://inspect` 方式，无需命令行参数启动），提供 HTTP API：
 
 ```bash
 # 启动（Agent 会自动管理 Proxy 生命周期，无需手动启动）

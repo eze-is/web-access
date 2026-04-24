@@ -4,7 +4,7 @@
 
 - 地址：`http://localhost:3456`
 - 启动：`node ~/.claude/skills/web-access/scripts/cdp-proxy.mjs &`
-- 启动后持续运行，不建议主动停止（重启需 Chrome 重新授权）
+- 启动后持续运行，不建议主动停止（重启需浏览器重新授权）
 - 强制停止：`pkill -f cdp-proxy.mjs`
 
 ## API 端点
@@ -100,7 +100,7 @@ curl -s "http://localhost:3456/screenshot?target=ID&file=/tmp/shot.png"
 
 | 错误 | 原因 | 解决 |
 |------|------|------|
-| `Chrome 未开启远程调试端口` | Chrome 未开启远程调试 | 提示用户打开 `chrome://inspect/#remote-debugging` 并勾选 Allow |
+| `浏览器未开启远程调试端口` | 浏览器未开启远程调试 | 提示用户打开 `chrome://inspect/#remote-debugging` 并勾选 Allow |
 | `attach 失败` | targetId 无效或 tab 已关闭 | 用 `/targets` 获取最新列表 |
 | `CDP 命令超时` | 页面长时间未响应 | 重试或检查 tab 状态 |
 | `端口已被占用` | 另一个 proxy 已在运行 | 已有实例可直接复用 |
