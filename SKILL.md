@@ -14,15 +14,75 @@ metadata:
 
 ## 前置检查
 
-在开始联网操作前，先检查 CDP 模式可用性：
+在开始联网操作前，先执行：
 
 ```bash
 node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 ```
 
-未通过时引导用户完成设置：
-- **Node.js 22+**：必需（使用原生 WebSocket）。版本低于 22 可用但需安装 `ws` 模块。
-- **Chrome remote-debugging**：在 Chrome 地址栏打开 `chrome://inspect/#remote-debugging`，勾选 **"Allow remote debugging for this browser instance"** 即可，可能需要重启浏览器。
+必须严格按以下流程处理：
+
+1. 若检查结果显示浏览器 **可用**：
+   - 若 **main browser** 和 **dedicated** 都可用：默认走 **dedicated**。只有用户明确要求主力浏览器时才走 `main browser`。
+   - 若只有一侧可用：直接使用可用的一侧。
+   - 选定模式后，立即开始工作，不要继续让用户做额外配置。
+2. 若检查结果显示两侧都 **不可用**：
+   - 先向用户解释两种模式的差异，让用户选 `main browser` 或 `dedicated`。
+   - 只引导用户配置他选中的那一种，不要两种都讲。
+   - 配置完成后，重新执行检查命令；检查通过后立即开始工作。
+
+当需要用户选择模式时，按下面的对比说明：
+
+| 模式 | 适合场景 | 主要优势 | 主要代价 |
+|------|----------|----------|----------|
+| main browser | 需要立刻复用现有登录态，马上执行任务 | 自动继承现有登录态、书签、插件 | 连接时可能需要处理远程调试授权弹窗；Agent 操作和用户自己的浏览器操作不隔离 |
+| 专用浏览器（dedicated） | 追求 autonomous agent 长时间稳定运行，用户不必一直守在电脑旁 | 通常不需要反复确认远程调试授权；Agent 操作和用户日常浏览隔离 | 首次配置需要单独登录常用网站、安装插件、准备 profile |
+
+向用户发起模式选择时，不应只给“1 / 2”两个编号。要直接说明差异、收益和代价，让用户按场景选择：
+
+- 需要立刻复用现有登录态、马上完成一次任务：通常选 `main browser`
+- 需要把 Agent 操作和日常使用隔离开、希望长期稳定复用同一套环境：通常选 `专用浏览器（dedicated）`
+
+### main browser
+
+1. 在 Chromium 系浏览器地址栏打开 `chrome://inspect/#remote-debugging`
+2. 勾选 **Allow remote debugging for this browser instance**（可能需要重启浏览器）
+3. 完成后重新执行默认检查命令：
+
+```bash
+node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
+```
+
+### 专用浏览器（dedicated）
+
+1. 先选定一个稳定的 `browser-id`：
+
+| browser-id | 浏览器 App 名称 |
+|---|---|
+| `chrome` | `Google Chrome` |
+| `chrome-canary` | `Google Chrome Canary` |
+| `chromium` | `Chromium` |
+| `brave` | `Brave Browser` |
+| `edge` | `Microsoft Edge` |
+| `arc` | `Arc` |
+
+2. 对应的专用 profile 目录固定为：`$HOME/.web-access/<browser-id>-dedicated-profile`
+
+3. 启动该专用浏览器实例并带远程调试参数。macOS 示例：
+
+```bash
+open -na "<浏览器 App 名称>" --args \
+  --remote-debugging-port=9333 \
+  --user-data-dir="$HOME/.web-access/<browser-id>-dedicated-profile"
+```
+
+4. 启动后重新执行 dedicated 检查命令：
+
+```bash
+node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs" --browser dedicated --browser-id brave
+```
+
+已经明确进入 dedicated 路径时，后续检查建议继续显式带上 `--browser dedicated`。`--browser-id` 主要用于帮助检查定位 dedicated profile。
 
 检查通过后并必须在回复中向用户直接展示以下须知，再启动 CDP Proxy 执行操作：
 
@@ -68,9 +128,9 @@ node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 
 浏览网页时，**先了解页面结构，再决定下一步动作**。不需要提前规划所有步骤。
 
-### 补充：本地 Chrome 资源
+### 补充：本地浏览器资源（Chrome）
 
-用户指向**本人访问过的页面**（"我之前看的那个讲 X 的文章"、"上次打开过的 XX 面板"）或**组织内部系统**（"我们的 XX 平台"、"公司那个 YY 系统"等公网搜不到的目标）时，检索本地 Chrome 书签/历史：
+用户指向**本人访问过的页面**（"我之前看的那个讲 X 的文章"、"上次打开过的 XX 面板"）或**组织内部系统**（"我们的 XX 平台"、"公司那个 YY 系统"等公网搜不到的目标）时，检索本地浏览器（Chrome）书签/历史：
 
 ```bash
 node "${CLAUDE_SKILL_DIR}/scripts/find-url.mjs" [关键词...] [--only bookmarks|history] [--limit N] [--since 1d|7h|YYYY-MM-DD] [--sort recent|visits]
@@ -91,7 +151,7 @@ node "${CLAUDE_SKILL_DIR}/scripts/find-url.mjs" [关键词...] [--only bookmarks
 
 ## 浏览器 CDP 模式
 
-通过 CDP Proxy 直连用户日常 Chrome，天然携带登录态，无需启动独立浏览器。
+通过 CDP Proxy 直连当前选定的浏览器实例（主力浏览器或专用浏览器），无需启动独立浏览器。
 若无用户明确要求，不主动操作用户已有 tab，所有操作都在自己创建的后台 tab 中进行，保持对用户环境的最小侵入。不关闭用户 tab 的前提下，完成任务后关闭自己创建的 tab，保持环境整洁。
 
 ### 启动
@@ -100,7 +160,7 @@ node "${CLAUDE_SKILL_DIR}/scripts/find-url.mjs" [关键词...] [--only bookmarks
 node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 ```
 
-脚本会依次检查 Node.js、Chrome 端口，并确保 Proxy 已连接（未运行则自动启动并等待）。Proxy 启动后持续运行。
+脚本会依次检查 Node.js、浏览器调试端口，并确保 Proxy 已连接（未运行则自动启动并等待）。Proxy 启动后持续运行。
 
 ### Proxy API
 
@@ -166,16 +226,16 @@ curl -s "http://localhost:3456/close?target=ID"
 
 ### 视频内容获取
 
-用户 Chrome 真实渲染，截图可捕获当前视频帧。核心能力：通过 `/eval` 操控 `<video>` 元素（获取时长、seek 到任意时间点、播放/暂停/全屏），配合 `/screenshot` 采帧，可对视频内容进行离散采样分析。
+用户浏览器真实渲染，截图可捕获当前视频帧。核心能力：通过 `/eval` 操控 `<video>` 元素（获取时长、seek 到任意时间点、播放/暂停/全屏），配合 `/screenshot` 采帧，可对视频内容进行离散采样分析。
 
 ### 登录判断
 
-用户日常 Chrome 天然携带登录态，大多数常用网站已登录。
+主力浏览器通常天然携带登录态，大多数常用网站已登录。专用浏览器（dedicated）需要一次性手动登录，后续复用同一 profile 可保持登录状态。
 
 登录判断的核心问题只有一个：**目标内容拿到了吗？**
 
 打开页面后先尝试获取目标内容。只有当确认**目标内容无法获取**且判断登录能解决时，才告知用户：
-> "当前页面在未登录状态下无法获取[具体内容]，请在你的 Chrome 中登录 [网站名]，完成后告诉我继续。"
+> "当前页面在未登录状态下无法获取[具体内容]，请在你的浏览器中登录 [网站名]，完成后告诉我继续。"
 
 登录完成后无需重启任何东西，直接刷新页面继续。
 
@@ -183,7 +243,7 @@ curl -s "http://localhost:3456/close?target=ID"
 
 用 `/close` 关闭自己创建的 tab，必须保留用户原有的 tab 不受影响。
 
-Proxy 持续运行，不建议主动停止——重启后需要在 Chrome 中重新授权 CDP 连接。
+Proxy 持续运行，不建议主动停止——重启后需要在浏览器中重新授权 CDP 连接。
 
 ## 并行调研：子 Agent 分治策略
 
@@ -193,7 +253,7 @@ Proxy 持续运行，不建议主动停止——重启后需要在 Chrome 中重
 - **速度**：多子 Agent 并行，总耗时约等于单个子任务时长
 - **上下文保护**：抓取内容不进入主 Agent 上下文，主 Agent 只接收摘要，节省 token
 
-**并行 CDP 操作**：每个子 Agent 在当前用户浏览器实例中，自行创建所需的后台 tab（`/new`），自行操作，任务结束自行关闭（`/close`）。所有子 Agent 共享一个 Chrome、一个 Proxy，通过不同 targetId 操作不同 tab，无竞态风险。
+**并行 CDP 操作**：每个子 Agent 在当前用户浏览器实例中，自行创建所需的后台 tab（`/new`），自行操作，任务结束自行关闭（`/close`）。所有子 Agent 共享一个浏览器实例、一个 Proxy，通过不同 targetId 操作不同 tab，无竞态风险。
 
 **子 Agent Prompt 写法：目标导向，而非步骤指令**
 - 必须在子 Agent prompt 中写 `必须加载 web-access skill 并遵循指引` ，子 Agent 会自动加载 skill，无需在 prompt 中复制 skill 内容或指定路径。

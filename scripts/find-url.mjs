@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// find-url - 从本地 Chrome 书签/历史中检索 URL
+// find-url - 从本地浏览器（Chrome）书签/历史中检索 URL
 // 用于定位公网搜索覆盖不到的目标（组织内部系统、SSO 后台、内网域名等）。
 //
 // 用法：
@@ -58,7 +58,7 @@ function parseSince(s) {
 function die(msg) { console.error(msg); process.exit(1); }
 function printUsage() { console.error(fs.readFileSync(new URL(import.meta.url)).toString().split('\n').slice(1, 19).map(l => l.replace(/^\/\/ ?/, '')).join('\n')); }
 
-// --- Chrome 用户数据目录（跨平台） ---------------------------------------
+// --- 浏览器（Chrome）用户数据目录（跨平台） ---------------------------------------
 function getChromeDataDir() {
   const home = os.homedir();
   switch (os.platform()) {
@@ -176,7 +176,7 @@ function printHistory(items, multiProfile, sortLabel) {
 const args = parseArgs(process.argv.slice(2));
 
 const dataDir = getChromeDataDir();
-if (!dataDir || !fs.existsSync(dataDir)) die('未找到 Chrome 用户数据目录');
+if (!dataDir || !fs.existsSync(dataDir)) die('未找到浏览器（Chrome）用户数据目录');
 
 const profiles = listProfiles(dataDir);
 const doBookmarks = args.only !== 'history';
