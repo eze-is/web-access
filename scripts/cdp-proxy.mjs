@@ -86,11 +86,33 @@ async function discoverChromePort() {
     const ok = await checkPort(port);
     if (ok) {
       console.log(`[CDP Proxy] 扫描发现 Chrome 调试端口: ${port}`);
+      // 尝试通过 HTTP API 获取 WebSocket 路径（含 UUID）
+      const wsPath = await getWsPathFromHttpApi(port);
+      if (wsPath) {
+        console.log(`[CDP Proxy] 通过 HTTP API 获取到 wsPath: ${wsPath}`);
+        return { port, wsPath };
+      }
       return { port, wsPath: null };
     }
   }
 
   return null;
+}
+
+// 通过 HTTP API 获取 Chrome WebSocket URL（含 UUID）
+async function getWsPathFromHttpApi(port) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/json/version`);
+    if (!res.ok) return null;
+    const json = await res.json();
+    const wsUrl = json.webSocketDebuggerUrl;
+    if (!wsUrl) return null;
+    // 提取路径部分，如 /devtools/browser/xxx-xxx
+    const match = wsUrl.match(/\/devtools\/browser\/[^\/]+/);
+    return match ? match[0] : null;
+  } catch {
+    return null;
+  }
 }
 
 // 用 TCP 探测端口是否监听——避免 WebSocket 连接触发 Chrome 安全弹窗
