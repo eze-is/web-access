@@ -317,6 +317,14 @@ async function readBody(req) {
   return body;
 }
 
+// --- 写入路径白名单（防 /screenshot?file= 路径穿越） ---
+function isSafeWritePath(p) {
+  if (typeof p !== 'string' || !p) return false;
+  const resolved = path.resolve(p);
+  const roots = [os.tmpdir(), process.cwd()].map(r => path.resolve(r));
+  return roots.some(root => resolved === root || resolved.startsWith(root + path.sep));
+}
+
 // --- HTTP API ---
 const server = http.createServer(async (req, res) => {
   const parsed = new URL(req.url, `http://localhost:${PORT}`);
@@ -538,14 +546,21 @@ const server = http.createServer(async (req, res) => {
     // GET /screenshot?target=xxx&file=/tmp/x.png - 截图
     else if (pathname === '/screenshot') {
       const sid = await ensureSession(q.target);
-      const format = q.format || 'png';
+      const allowedFormats = new Set(['png', 'jpeg', 'webp']);
+      const format = allowedFormats.has(q.format) ? q.format : 'png';
       const resp = await sendCDP('Page.captureScreenshot', {
         format,
         quality: format === 'jpeg' ? 80 : undefined,
       }, sid);
       if (q.file) {
-        fs.writeFileSync(q.file, Buffer.from(resp.result.data, 'base64'));
-        res.end(JSON.stringify({ saved: q.file }));
+        if (!isSafeWritePath(q.file)) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: 'file 必须位于系统临时目录或当前工作目录下' }));
+          return;
+        }
+        const dst = path.resolve(q.file);
+        fs.writeFileSync(dst, Buffer.from(resp.result.data, 'base64'));
+        res.end(JSON.stringify({ saved: dst }));
       } else {
         res.setHeader('Content-Type', 'image/' + format);
         res.end(Buffer.from(resp.result.data, 'base64'));
@@ -607,7 +622,10 @@ async function main() {
         http.get(`http://127.0.0.1:${PORT}/health`, { timeout: 2000 }, (res) => {
           let d = '';
           res.on('data', c => d += c);
-          res.on('end', () => resolve(d.includes('"ok"')));
+          res.on('end', () => {
+            try { resolve(JSON.parse(d).status === 'ok'); }
+            catch { resolve(false); }
+          });
         }).on('error', () => resolve(false));
       });
       if (ok) {
