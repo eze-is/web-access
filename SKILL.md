@@ -14,13 +14,23 @@ metadata:
 
 ## 前置检查
 
-在开始联网操作前，先检查 CDP 模式可用性：
+在开始联网操作前，优先检查浏览器扩展后端可用性：
+
+```bash
+node "${CLAUDE_SKILL_DIR}/scripts/check-webext.mjs"
+```
+
+**Node.js 22+** 必需（使用原生 WebSocket）。
+
+按脚本输出处理：
+- `exit 0` → 扩展后端已连接，后续浏览器操作使用 `http://127.0.0.1:3457`
+- `exit 1` 且提示 extension not connected → 这是一次性安装步骤。引导用户打开 `chrome://extensions` 或 `edge://extensions`，启用 Developer mode，Load unpacked 选择 `${CLAUDE_SKILL_DIR}/extension`，然后重跑检查。安装并授权扩展后，日常使用不再需要浏览器 remote-debugging 授权弹窗。
+
+扩展后端不可用、目标页无法 attach，或需要扩展未覆盖的底层 CDP 能力时，再检查 CDP 兜底：
 
 ```bash
 node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 ```
-
-**Node.js 22+** 必需（使用原生 WebSocket）。
 
 按脚本输出处理：
 - `exit 0` → 继续
@@ -31,7 +41,7 @@ node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 
 切换浏览器时，proxy 是长驻进程，需先 `pkill -f cdp-proxy.mjs` 再重跑 check-deps。
 
-检查通过后并必须在回复中向用户直接展示以下须知，再启动 CDP Proxy 执行操作：
+检查通过后并必须在回复中向用户直接展示以下须知，再启动浏览器自动化执行操作：
 
 ```
 温馨提示：部分站点对浏览器自动化操作检测严格，存在账号封禁风险。已内置防护措施但无法完全避免，Agent 继续操作即视为接受。
@@ -96,58 +106,72 @@ node "${CLAUDE_SKILL_DIR}/scripts/find-url.mjs" [关键词...] [--only bookmarks
 
 **站点内交互产生的链接是可靠的**：通过用户视角中的可交互单元（卡片、条目、按钮）进行的站点内交互，自然到达的 URL 天然携带平台所需的完整上下文。而手动构造的 URL 可能缺失隐式必要参数，导致被拦截、返回错误页面、甚至触发反爬。
 
-## 浏览器 CDP 模式
+## 浏览器模式
 
-通过 CDP Proxy 直连用户日常浏览器（Chrome / Edge / Chromium 等 Chromium 系），天然携带登录态，无需启动独立浏览器。
+通过浏览器扩展后端或 CDP Proxy 直连用户日常浏览器（Chrome / Edge / Chromium 等 Chromium 系），天然携带登录态，无需启动独立浏览器。
 若无用户明确要求，不主动操作用户已有 tab，所有操作都在自己创建的后台 tab 中进行，保持对用户环境的最小侵入。不关闭用户 tab 的前提下，完成任务后关闭自己创建的 tab，保持环境整洁。
 
-### 启动
+### 扩展后端（优先）
+
+```bash
+node "${CLAUDE_SKILL_DIR}/scripts/check-webext.mjs"
+```
+
+扩展后端由本地 `scripts/webext-proxy.mjs` 暴露 HTTP API，再由 `extension/` 中的 Manifest V3 扩展通过 `chrome.debugger` / `chrome.tabs` 操作浏览器。一次性安装并授权扩展后，日常使用不再依赖 `chrome://inspect/#remote-debugging` 的授权弹窗。细节见 `references/browser-extension.md`。
+
+### CDP 兜底
 
 ```bash
 node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 ```
 
-脚本会依次检查 Node.js、浏览器调试端口，并确保 Proxy 已连接（未运行则自动启动并等待）。Proxy 启动后持续运行。
+只有扩展后端不可用、扩展无法 attach 当前页面，或确实需要扩展后端未覆盖的底层 CDP 能力时，才运行 CDP 检查。脚本会依次检查 Node.js、浏览器调试端口，并确保 Proxy 已连接（未运行则自动启动并等待）。Proxy 启动后持续运行。
 
 ### Proxy API
 
-所有操作通过 curl 调用 HTTP API：
+所有操作通过 curl 调用 HTTP API。扩展后端端口是 `3457`，CDP 兜底端口是 `3456`：
 
 ```bash
+# 扩展后端
+BASE=http://127.0.0.1:3457
+
+# CDP 兜底时改为
+# BASE=http://127.0.0.1:3456
+
 # 列出用户已打开的 tab
-curl -s http://localhost:3456/targets
+curl -s "$BASE/targets"
 
 # 创建新后台 tab（自动等待加载）— URL 走 POST body，避免目标 URL 含 query 时被切分
-curl -s -X POST --data-raw 'https://example.com' http://localhost:3456/new
+curl -s -X POST --data-raw 'https://example.com' "$BASE/new"
 
 # 页面信息
-curl -s "http://localhost:3456/info?target=ID"
+curl -s "$BASE/info?target=ID"
 
 # 执行任意 JS：可读写 DOM、提取数据、操控元素、触发状态变更、提交表单、调用内部方法
-curl -s -X POST "http://localhost:3456/eval?target=ID" -d 'document.title'
+curl -s -X POST "$BASE/eval?target=ID" -d 'document.title'
 
 # 捕获页面渲染状态（含视频当前帧）
-curl -s "http://localhost:3456/screenshot?target=ID&file=/tmp/shot.png"
+curl -s "$BASE/screenshot?target=ID&file=/tmp/shot.png"
 
 # 导航（URL 走 POST body，target 走 query）、后退
-curl -s -X POST --data-raw 'https://example.com' "http://localhost:3456/navigate?target=ID"
-curl -s "http://localhost:3456/back?target=ID"
+curl -s -X POST --data-raw 'https://example.com' "$BASE/navigate?target=ID"
+curl -s "$BASE/back?target=ID"
 
 # 点击（POST body 为 CSS 选择器）— JS el.click()，简单快速，覆盖大多数场景
-curl -s -X POST "http://localhost:3456/click?target=ID" -d 'button.submit'
+curl -s -X POST "$BASE/click?target=ID" -d 'button.submit'
 
-# 真实鼠标点击 — CDP Input.dispatchMouseEvent，算用户手势，能触发文件对话框
-curl -s -X POST "http://localhost:3456/clickAt?target=ID" -d 'button.upload'
+# 真实鼠标点击 — 浏览器级鼠标事件，算用户手势，能触发文件对话框
+curl -s -X POST "$BASE/clickAt?target=ID" -d 'button.upload'
 
 # 文件上传 — 直接设置 file input 的本地文件路径，绕过文件对话框
-curl -s -X POST "http://localhost:3456/setFiles?target=ID" -d '{"selector":"input[type=file]","files":["/path/to/file.png"]}'
+curl -s -X POST "$BASE/setFiles?target=ID" -d '{"selector":"input[type=file]","files":["/path/to/file.png"]}'
 
 # 滚动（触发懒加载）
-curl -s "http://localhost:3456/scroll?target=ID&y=3000"
-curl -s "http://localhost:3456/scroll?target=ID&direction=bottom"
+curl -s "$BASE/scroll?target=ID&y=3000"
+curl -s "$BASE/scroll?target=ID&direction=bottom"
 
 # 关闭 tab
-curl -s "http://localhost:3456/close?target=ID"
+curl -s "$BASE/close?target=ID"
 ```
 
 ### 页面内导航
@@ -261,5 +285,6 @@ updated: 2026-03-19
 
 | 文件 | 何时加载 |
 |------|---------|
+| `references/browser-extension.md` | 需要扩展后端安装、端口、能力边界或安全说明时 |
 | `references/cdp-api.md` | 需要 CDP API 详细参考、JS 提取模式、错误处理时 |
 | `references/site-patterns/{domain}.md` | 确定目标网站后，读取对应站点经验 |

@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "web-access Browser Bridge",
+  "version": "0.1.0",
+  "description": "Browser automation bridge for the web-access skill. Connects Chrome/Edge tabs to a local daemon without remote-debugging prompts.",
+  "permissions": [
+    "debugger",
+    "tabs",
+    "activeTab",
+    "alarms",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "web-access",
+    "default_popup": "popup.html"
+  }
+}

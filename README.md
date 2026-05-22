@@ -36,12 +36,16 @@ AI Agent 原本的联网能力（WebSearch、WebFetch）缺少调度策略和浏
 | 能力 | 说明 |
 |------|------|
 | 联网工具自动选择 | WebSearch / WebFetch / curl / Jina / CDP，按场景自主判断，可任意组合 |
+| 浏览器扩展后端 | 可选的本地 Browser Bridge，一次性安装扩展后通过 `chrome.debugger` / `chrome.tabs` 操作 Chrome / Edge，避免日常使用依赖 remote-debugging 授权 |
 | CDP Proxy 浏览器操作 | 直连用户日常浏览器（Chrome / Edge / Chromium 系），天然携带登录态，支持动态页面、交互操作、视频截帧 |
 | 三种点击方式 | `/click`（JS click）、`/clickAt`（CDP 真实鼠标事件）、`/setFiles`（文件上传） |
 | 本地浏览器书签/历史检索 | `find-url.mjs` 跨 Chrome / Edge 查询公网搜不到的目标（内部系统）或用户访问过的页面，支持关键词/时间窗/访问频度排序 |
 | 并行分治 | 多目标时分发子 Agent 并行执行，共享一个 Proxy，tab 级隔离 |
 | 站点经验积累 | 按域名存储操作经验（URL 模式、平台特征、已知陷阱），跨 session 复用 |
 | 媒体提取 | 从 DOM 直取图片/视频 URL，或对视频任意时间点截帧分析 |
+
+**未发布更新：**
+- **浏览器扩展后端（可选）** — 新增 `extension/`、`scripts/webext-proxy.mjs` 和 `scripts/check-webext.mjs`。一次性 Load unpacked 并授权扩展后，默认使用 `127.0.0.1:3457`，日常浏览器操作不再需要 Chrome / Edge remote-debugging 授权弹窗。CDP Proxy 保留为兜底。
 
 **v2.5.2 更新：**
 - **Microsoft Edge 支持** — CDP Proxy 不再绑定 Chrome，新增 Edge 适配（及 Chromium、Chrome Canary 等 Chromium 系，通过同一套自动发现机制接入）。在 `edge://inspect/#remote-debugging` 勾选 "Allow remote debugging for this browser instance" 即可
@@ -109,7 +113,17 @@ claude plugin install web-access@web-access --scope user
 git clone https://github.com/eze-is/web-access ~/.claude/skills/web-access
 ```
 
-## 前置配置（CDP 模式）
+## 前置配置（浏览器模式）
+
+优先使用可选浏览器扩展后端：
+
+```bash
+node "${CLAUDE_SKILL_DIR}/scripts/check-webext.mjs"
+```
+
+如果扩展未连接，打开 `chrome://extensions` 或 `edge://extensions`，启用 Developer mode，Load unpacked 选择本 skill 的 `extension/` 目录。安装后扩展会连接本地 `webext-proxy.mjs`，后续浏览器操作无需再点 remote-debugging 授权弹窗。
+
+### CDP 兜底
 
 CDP 模式需要 **Node.js 22+** 和浏览器（Chrome / Edge）开启远程调试：
 
@@ -149,28 +163,31 @@ node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 # 手动运行请替换为实际路径，如 ~/.claude/skills/web-access
 ```
 
-## CDP Proxy API
+## Proxy API
 
-Proxy 通过 WebSocket 直连浏览器（兼容 `chrome://inspect` / `edge://inspect` 方式，无需命令行参数启动），提供 HTTP API：
+扩展后端端口是 `3457`，CDP 兜底端口是 `3456`。两者都提供常用 HTTP API：
 
 ```bash
-# 启动（Agent 会自动管理 Proxy 生命周期，无需手动启动）
-node "${CLAUDE_SKILL_DIR}/scripts/cdp-proxy.mjs" &
+# 扩展后端
+BASE=http://127.0.0.1:3457
+
+# CDP 兜底时改为
+# BASE=http://127.0.0.1:3456
 
 # 页面操作
-curl -s -X POST --data-raw 'https://example.com' http://localhost:3456/new  # 新建 tab（v2.5.3 起 URL 走 POST body）
-curl -s -X POST "http://localhost:3456/eval?target=ID" -d 'document.title'  # 执行 JS
-curl -s -X POST "http://localhost:3456/click?target=ID" -d 'button.submit'  # JS 点击
-curl -s -X POST "http://localhost:3456/clickAt?target=ID" -d '.upload-btn'  # 真实鼠标点击
-curl -s -X POST "http://localhost:3456/setFiles?target=ID" \
+curl -s -X POST --data-raw 'https://example.com' "$BASE/new"  # 新建 tab（v2.5.3 起 URL 走 POST body）
+curl -s -X POST "$BASE/eval?target=ID" -d 'document.title'  # 执行 JS
+curl -s -X POST "$BASE/click?target=ID" -d 'button.submit'  # JS 点击
+curl -s -X POST "$BASE/clickAt?target=ID" -d '.upload-btn'  # 真实鼠标点击
+curl -s -X POST "$BASE/setFiles?target=ID" \
   -d '{"selector":"input[type=file]","files":["/path/to/file.png"]}'        # 文件上传
-curl -s "http://localhost:3456/screenshot?target=ID&file=/tmp/shot.png"     # 截图
-curl -s "http://localhost:3456/scroll?target=ID&direction=bottom"           # 滚动
-curl -s "http://localhost:3456/close?target=ID"                             # 关闭 tab
-curl -s "http://localhost:3456/health"                                      # 查看状态（含 managedTabs 数量）
+curl -s "$BASE/screenshot?target=ID&file=/tmp/shot.png"     # 截图
+curl -s "$BASE/scroll?target=ID&direction=bottom"           # 滚动
+curl -s "$BASE/close?target=ID"                             # 关闭 tab
+curl -s "$BASE/health"                                      # 查看状态
 ```
 
-Proxy 会自动追踪通过 `/new` 创建的 tab，闲置 15 分钟后自动关闭，防止 Agent 异常退出时留下孤儿 tab。可通过环境变量 `CDP_TAB_IDLE_TIMEOUT`（单位毫秒）调整超时时间。
+CDP Proxy 会自动追踪通过 `/new` 创建的 tab，闲置 15 分钟后自动关闭，防止 Agent 异常退出时留下孤儿 tab。可通过环境变量 `CDP_TAB_IDLE_TIMEOUT`（单位毫秒）调整超时时间。
 
 ## ⚠️ 使用前提醒
 
