@@ -161,6 +161,16 @@ async function connect() {
       const data = typeof evt === 'string' ? evt : (evt.data || evt);
       const msg = JSON.parse(typeof data === 'string' ? data : data.toString());
 
+      // 路由无 id 的 CDP 事件到注册的监听器
+      if (!msg.id) {
+        const listeners = eventListeners.get(msg.method);
+        if (listeners) {
+          for (const cb of listeners) {
+            try { cb(msg); } catch { /* 监听器错误不影响其他 */ }
+          }
+        }
+      }
+
       if (msg.method === 'Target.attachedToTarget') {
         const { sessionId, targetInfo } = msg.params;
         sessions.set(targetInfo.targetId, sessionId);
@@ -275,9 +285,22 @@ async function closeAllManagedTabs() {
   if (targets.length) console.log(`[CDP Proxy] Shutdown: closed ${targets.length} managed tab(s)`);
 }
 
-// --- 等待页面加载 ---
+// --- CDP 事件监听（用于接收非请求的浏览器事件）---
+const eventListeners = new Map(); // method -> Set<callback>
+
+function addEventListener(method, callback) {
+  if (!eventListeners.has(method)) eventListeners.set(method, new Set());
+  eventListeners.get(method).add(callback);
+  // 返回取消订阅函数
+  return () => {
+    const set = eventListeners.get(method);
+    if (set) set.delete(callback);
+  };
+}
+
+// --- 等待页面加载（事件驱动，零轮询）---
 async function waitForLoad(sessionId, timeoutMs = 15000) {
-  // 启用 Page 域
+  // 启用 Page 域以接收 loadEventFired 事件
   await sendCDP('Page.enable', {}, sessionId);
 
   return new Promise((resolve) => {
@@ -286,22 +309,28 @@ async function waitForLoad(sessionId, timeoutMs = 15000) {
       if (resolved) return;
       resolved = true;
       clearTimeout(timer);
-      clearInterval(checkInterval);
+      unsubscribe();
       resolve(result);
     };
 
     const timer = setTimeout(() => done('timeout'), timeoutMs);
-    const checkInterval = setInterval(async () => {
-      try {
-        const resp = await sendCDP('Runtime.evaluate', {
-          expression: 'document.readyState',
-          returnByValue: true,
-        }, sessionId);
-        if (resp.result?.result?.value === 'complete') {
-          done('complete');
-        }
-      } catch { /* 忽略 */ }
-    }, 500);
+
+    // 使用 Page.loadEventFired 事件替代轮询（零开销，即时响应）
+    const unsubscribe = addEventListener('Page.loadEventFired', (msg) => {
+      if (msg.sessionId === sessionId) {
+        done('complete');
+      }
+    });
+
+    // 如果页面已经加载完毕（导航到已缓存的页面），立刻检测一次
+    sendCDP('Runtime.evaluate', {
+      expression: 'document.readyState',
+      returnByValue: true,
+    }, sessionId).then(resp => {
+      if (resp.result?.result?.value === 'complete' && !resolved) {
+        done('complete');
+      }
+    }).catch(() => {});
   });
 }
 

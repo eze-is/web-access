@@ -111,43 +111,28 @@ node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 
 ### Proxy API
 
-所有操作通过 curl 调用 HTTP API：
+所有操作通过 curl 调用 `http://localhost:3456`。**完整 API 参考（含错误处理、/eval 使用提示）见 [`references/cdp-api.md`](references/cdp-api.md)。**
+
+快速参考：
 
 ```bash
-# 列出用户已打开的 tab
-curl -s http://localhost:3456/targets
-
-# 创建新后台 tab（自动等待加载）— URL 走 POST body，避免目标 URL 含 query 时被切分
-curl -s -X POST --data-raw 'https://example.com' http://localhost:3456/new
-
-# 页面信息
-curl -s "http://localhost:3456/info?target=ID"
-
-# 执行任意 JS：可读写 DOM、提取数据、操控元素、触发状态变更、提交表单、调用内部方法
-curl -s -X POST "http://localhost:3456/eval?target=ID" -d 'document.title'
-
-# 捕获页面渲染状态（含视频当前帧）
-curl -s "http://localhost:3456/screenshot?target=ID&file=/tmp/shot.png"
-
-# 导航（URL 走 POST body，target 走 query）、后退
+# 创建新 tab（URL 走 POST body）                # 页面操作
+curl -s -X POST --data-raw 'https://example.com'  http://localhost:3456/new
 curl -s -X POST --data-raw 'https://example.com' "http://localhost:3456/navigate?target=ID"
-curl -s "http://localhost:3456/back?target=ID"
+curl -s "http://localhost:3456/info?target=ID"          # 页面信息
+curl -s "http://localhost:3456/back?target=ID"          # 后退
 
-# 点击（POST body 为 CSS 选择器）— JS el.click()，简单快速，覆盖大多数场景
-curl -s -X POST "http://localhost:3456/click?target=ID" -d 'button.submit'
-
-# 真实鼠标点击 — CDP Input.dispatchMouseEvent，算用户手势，能触发文件对话框
+# 交互（body 为 CSS 选择器 / JS 表达式）          # 信息
+curl -s -X POST "http://localhost:3456/click?target=ID"   -d 'button.submit'
 curl -s -X POST "http://localhost:3456/clickAt?target=ID" -d 'button.upload'
-
-# 文件上传 — 直接设置 file input 的本地文件路径，绕过文件对话框
+curl -s -X POST "http://localhost:3456/eval?target=ID"    -d 'document.title'
 curl -s -X POST "http://localhost:3456/setFiles?target=ID" -d '{"selector":"input[type=file]","files":["/path/to/file.png"]}'
 
-# 滚动（触发懒加载）
-curl -s "http://localhost:3456/scroll?target=ID&y=3000"
+# 滚动与截图                                      # 管理
 curl -s "http://localhost:3456/scroll?target=ID&direction=bottom"
-
-# 关闭 tab
-curl -s "http://localhost:3456/close?target=ID"
+curl -s "http://localhost:3456/screenshot?target=ID&file=/tmp/shot.png"
+curl -s http://localhost:3456/targets                  # 列出所有 tab
+curl -s "http://localhost:3456/close?target=ID"        # 关闭 tab
 ```
 
 ### 页面内导航
