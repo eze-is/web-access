@@ -584,6 +584,35 @@ const server = http.createServer(async (req, res) => {
       res.end(resp.result?.result?.value || '{}');
     }
 
+    // POST /emulate?target=xxx (body=JSON) - 设备/移动视口模拟；?reset=1 清除
+    // body: {"width":390,"height":844,"dsf":2,"mobile":true,"ua":"...iPhone..."}
+    // 状态作用于该 target 的 session：emulate 后其 /eval /screenshot /click 均保持该视口，
+    // 直到 reset 或 /close。建议只对自建临时 tab 使用。
+    else if (pathname === '/emulate') {
+      const sid = await ensureSession(q.target);
+      if (q.reset === '1' || q.reset === 'true') {
+        await sendCDP('Emulation.clearDeviceMetricsOverride', {}, sid);
+        await sendCDP('Emulation.setTouchEmulationEnabled', { enabled: false }, sid);
+        await sendCDP('Emulation.setUserAgentOverride', { userAgent: '' }, sid);
+        res.end(JSON.stringify({ reset: true }));
+      } else {
+        let opts = {};
+        const body = (await readBody(req)).trim();
+        if (body) {
+          try { opts = JSON.parse(body); }
+          catch { res.statusCode = 400; res.end(JSON.stringify({ error: 'body 需为 JSON' })); return; }
+        }
+        const width = opts.width || 390;
+        const height = opts.height || 844;
+        const deviceScaleFactor = opts.dsf ?? opts.deviceScaleFactor ?? 2;
+        const mobile = opts.mobile ?? true;
+        await sendCDP('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor, mobile }, sid);
+        await sendCDP('Emulation.setTouchEmulationEnabled', { enabled: !!mobile }, sid);
+        if (opts.ua) await sendCDP('Emulation.setUserAgentOverride', { userAgent: opts.ua }, sid);
+        res.end(JSON.stringify({ emulated: { width, height, deviceScaleFactor, mobile, ua: !!opts.ua } }));
+      }
+    }
+
     else {
       res.statusCode = 404;
       res.end(JSON.stringify({
@@ -600,6 +629,7 @@ const server = http.createServer(async (req, res) => {
           '/click?target=': 'POST body=CSS选择器 - 点击元素',
           '/scroll?target=&y=&direction=': 'GET - 滚动页面',
           '/screenshot?target=&file=': 'GET - 截图',
+          '/emulate?target=&reset=': 'POST body=JSON{width,height,dsf,mobile,ua} - 设备/移动视口模拟；reset=1 清除',
         },
       }));
     }
