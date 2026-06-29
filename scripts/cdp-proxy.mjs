@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
-import { selectBrowser, findFallbackPort } from './browser-discovery.mjs';
+import { selectBrowser, findFallbackPort, readConfig } from './browser-discovery.mjs';
 
 // --- 解析命令行 --browser 参数（本次启动用哪个浏览器）---
 function parseBrowserArg() {
@@ -22,7 +22,9 @@ function parseBrowserArg() {
 }
 const BROWSER_OVERRIDE = parseBrowserArg();
 
-const PORT = parseInt(process.env.CDP_PROXY_PORT || '3456');
+const PROXY_CONFIG = readConfig();
+const PORT = parseInt(process.env.CDP_PROXY_PORT || PROXY_CONFIG.CDP_PROXY_PORT || '3456');
+const HOST = process.env.CDP_PROXY_HOST || PROXY_CONFIG.CDP_PROXY_HOST || '0.0.0.0';
 let ws = null;
 let cmdId = 0;
 const pending = new Map(); // id -> {resolve, timer}
@@ -325,6 +327,7 @@ const server = http.createServer(async (req, res) => {
     // /health 不需要连接浏览器
     if (pathname === '/health') {
       const connected = ws && (ws.readyState === WS.OPEN || ws.readyState === 1);
+      const bind = HOST === '0.0.0.0' || HOST === '::' ? 'localhost / LAN IP' : HOST;
       res.end(JSON.stringify({
         status: 'ok',
         connected,
@@ -332,6 +335,7 @@ const server = http.createServer(async (req, res) => {
         sessions: sessions.size,
         managedTabs: managedTabs.size,
         chromePort,
+        proxy: { host: HOST, port: PORT, bind },
       }));
       return;
     }
@@ -610,18 +614,18 @@ const server = http.createServer(async (req, res) => {
 });
 
 // 检查端口是否被占用
-function checkPortAvailable(port) {
+function checkPortAvailable(port, host) {
   return new Promise((resolve) => {
     const s = net.createServer();
     s.once('error', () => resolve(false));
     s.once('listening', () => { s.close(); resolve(true); });
-    s.listen(port, '127.0.0.1');
+    s.listen(port, host);
   });
 }
 
 async function main() {
   // 检查是否已有 proxy 在运行
-  const available = await checkPortAvailable(PORT);
+  const available = await checkPortAvailable(PORT, HOST);
   if (!available) {
     // 验证已有实例是否健康
     try {
@@ -641,8 +645,12 @@ async function main() {
     process.exit(1);
   }
 
-  server.listen(PORT, '127.0.0.1', () => {
-    console.log(`[CDP Proxy] 运行在 http://localhost:${PORT}`);
+  server.listen(PORT, HOST, () => {
+    const localUrl = `http://localhost:${PORT}`;
+    const bindDesc = HOST === '0.0.0.0' || HOST === '::'
+      ? `${localUrl}（局域网可通过 http://<本机局域网IP>:${PORT} 访问）`
+      : `http://${HOST}:${PORT}`;
+    console.log(`[CDP Proxy] 运行在 ${bindDesc}`);
     // 启动时尝试连接 Chrome（非阻塞）
     connect().catch(e => console.error('[CDP Proxy] 初始连接失败:', e.message, '（将在首次请求时重试）'));
   });

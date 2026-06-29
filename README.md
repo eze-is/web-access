@@ -125,9 +125,21 @@ skill 长期偏好保存在 `${CLAUDE_SKILL_DIR}/config.env`（首次运行自�
 ```bash
 # 留空 = 每次启动都询问偏好；设值 = 固定使用该浏览器
 WEB_ACCESS_BROWSER=edge
+
+# CDP Proxy 监听设置（有浏览器的机器）
+# 默认允许局域网其他机器通过 http://<本机局域网IP>:3456 调用
+CDP_PROXY_HOST=0.0.0.0
+CDP_PROXY_PORT=3456
+
+# 无浏览器机器：填写有浏览器机器的局域网地址；留空则使用本机浏览器
+CDP_PROXY_BASE_URL=http://192.168.1.10:3456
 ```
 
-合法值：`chrome` / `edge`
+合法值：`WEB_ACCESS_BROWSER=chrome` / `edge`
+
+**局域网远程访问**：有浏览器的机器启动 Proxy 后，其他机器用 `http://<有浏览器机器IP>:3456` 调用 API。无浏览器机器在 `config.env` 设置 `CDP_PROXY_BASE_URL` 后，`check-deps.mjs` 只校验远端 `/health`，不会要求本机浏览器。
+
+> 安全提示：CDP Proxy 是浏览器控制 API，当前没有鉴权。只建议暴露在可信局域网 / VPN 内，并通过系统防火墙限制来源 IP；不要直接暴露到公网。
 
 **临时用别的浏览器**（不修改 config.env）：
 
@@ -157,7 +169,7 @@ Proxy 通过 WebSocket 直连浏览器（兼容 `chrome://inspect` / `edge://ins
 # 启动（Agent 会自动管理 Proxy 生命周期，无需手动启动）
 node "${CLAUDE_SKILL_DIR}/scripts/cdp-proxy.mjs" &
 
-# 页面操作
+# 页面操作（本机用 localhost；远端机器把 localhost 替换成有浏览器机器的局域网 IP）
 curl -s -X POST --data-raw 'https://example.com' http://localhost:3456/new  # 新建 tab（v2.5.3 起 URL 走 POST body）
 curl -s -X POST "http://localhost:3456/eval?target=ID" -d 'document.title'  # 执行 JS
 curl -s -X POST "http://localhost:3456/click?target=ID" -d 'button.submit'  # JS 点击
