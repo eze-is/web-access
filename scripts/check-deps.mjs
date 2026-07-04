@@ -14,6 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { selectBrowser, knownBrowsers, findFallbackPort } from './browser-discovery.mjs';
+import { waitForProxyConnection } from './check-deps-helpers.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PROXY_SCRIPT = path.join(ROOT, 'scripts', 'cdp-proxy.mjs');
@@ -77,7 +78,6 @@ function startProxyDetached(browserOverride) {
 
 async function ensureProxy(expectedBrowserId, browserOverride) {
   const healthUrl = `http://127.0.0.1:${PROXY_PORT}/health`;
-  const targetsUrl = `http://127.0.0.1:${PROXY_PORT}/targets`;
 
   // 复用：proxy 已运行 + 已连接浏览器 → 校验 expected vs actual
   const health = await httpGetJson(healthUrl);
@@ -98,18 +98,16 @@ async function ensureProxy(expectedBrowserId, browserOverride) {
 
   await new Promise((r) => setTimeout(r, 2000));
 
-  for (let i = 1; i <= 15; i++) {
-    const result = await httpGetJson(targetsUrl, 8000);
-    if (Array.isArray(result)) {
-      const newHealth = await httpGetJson(healthUrl);
-      const label = newHealth?.browser?.label || 'unknown';
-      console.log(`proxy: ready (${label})`);
-      return true;
-    }
-    if (i === 1) {
-      console.log('⚠️  浏览器可能有授权弹窗，请点击「允许」后等待连接...');
-    }
-    await new Promise((r) => setTimeout(r, 1000));
+  console.log('⚠️  浏览器可能有授权弹窗，请点击「允许」后等待连接...');
+  const ready = await waitForProxyConnection({
+    healthUrl,
+    httpGetJson,
+  });
+  if (ready) {
+    const newHealth = await httpGetJson(healthUrl);
+    const label = newHealth?.browser?.label || 'unknown';
+    console.log(`proxy: ready (${label})`);
+    return true;
   }
 
   console.log('❌ 连接超时，请检查浏览器调试设置');
