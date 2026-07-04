@@ -59,6 +59,42 @@ export function checkPort(port, host = '127.0.0.1', timeoutMs = 2000) {
   });
 }
 
+// DevTools 元数据检测
+// 仅端口可连并不代表它真的是 Chrome DevTools 端点；
+// 需要进一步确认 /json/version 返回了可用的 webSocketDebuggerUrl。
+async function checkDevToolsEndpoint(port, expectedWsPath = null, host = '127.0.0.1', timeoutMs = 3000) {
+  try {
+    const res = await fetch(`http://${host}:${port}/json/version`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    if (!data?.webSocketDebuggerUrl) return false;
+    if (expectedWsPath && !String(data.webSocketDebuggerUrl).endsWith(expectedWsPath)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function getDevToolsMetadata(port, host = '127.0.0.1', timeoutMs = 3000) {
+  try {
+    const res = await fetch(`http://${host}:${port}/json/version`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data?.webSocketDebuggerUrl) return null;
+    const prefix = `ws://${host}:${port}`;
+    const wsPath = String(data.webSocketDebuggerUrl).startsWith(prefix)
+      ? String(data.webSocketDebuggerUrl).slice(prefix.length)
+      : null;
+    return { port, wsPath, webSocketDebuggerUrl: data.webSocketDebuggerUrl };
+  } catch {
+    return null;
+  }
+}
+
 // 读 config.env 文件（不写入 process.env，分清来源）
 // 格式：KEY=VALUE，# 开头是注释
 function readConfig() {
@@ -87,9 +123,11 @@ async function detectAll() {
     catch { continue; }
     const lines = content.trim().split(/\r?\n/).filter(Boolean);
     const port = parseInt(lines[0], 10);
+    const wsPath = lines[1] || null;
     if (!(port > 0 && port < 65536)) continue;
     if (!(await checkPort(port))) continue;
-    result.push({ ...browser, port, wsPath: lines[1] || null });
+    if (!(await checkDevToolsEndpoint(port, wsPath))) continue;
+    result.push({ ...browser, port, wsPath });
   }
   return result;
 }
@@ -132,7 +170,17 @@ export async function selectBrowser(override = null) {
 // 此时 DevToolsActivePort 可能不在默认 user-data-dir。
 export async function findFallbackPort() {
   for (const port of [9222, 9229, 9333]) {
-    if (await checkPort(port)) return port;
+    if (!(await checkPort(port))) continue;
+    if (await checkDevToolsEndpoint(port)) return port;
+  }
+  return null;
+}
+
+export async function findFallbackDebugger() {
+  for (const port of [9222, 9229, 9333]) {
+    if (!(await checkPort(port))) continue;
+    const metadata = await getDevToolsMetadata(port);
+    if (metadata) return metadata;
   }
   return null;
 }
