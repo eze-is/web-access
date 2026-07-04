@@ -59,6 +59,26 @@ export function checkPort(port, host = '127.0.0.1', timeoutMs = 2000) {
   });
 }
 
+async function checkDebuggerWebSocket(port, wsPath, host = '127.0.0.1', timeoutMs = 3000) {
+  if (!wsPath) return false;
+  return new Promise((resolve) => {
+    const ws = new WebSocket(`ws://${host}:${port}${wsPath}`);
+    const timer = setTimeout(() => {
+      try { ws.close(); } catch {}
+      resolve(false);
+    }, timeoutMs);
+    ws.addEventListener('open', () => {
+      clearTimeout(timer);
+      try { ws.close(); } catch {}
+      resolve(true);
+    });
+    ws.addEventListener('error', () => {
+      clearTimeout(timer);
+      resolve(false);
+    });
+  });
+}
+
 // DevTools 元数据检测
 // 仅端口可连并不代表它真的是 Chrome DevTools 端点；
 // 需要进一步确认 /json/version 返回了可用的 webSocketDebuggerUrl。
@@ -126,7 +146,8 @@ async function detectAll() {
     const wsPath = lines[1] || null;
     if (!(port > 0 && port < 65536)) continue;
     if (!(await checkPort(port))) continue;
-    if (!(await checkDevToolsEndpoint(port, wsPath))) continue;
+    if (!(await checkDevToolsEndpoint(port, wsPath)) &&
+        !(await checkDebuggerWebSocket(port, wsPath))) continue;
     result.push({ ...browser, port, wsPath });
   }
   return result;
