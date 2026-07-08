@@ -14,22 +14,17 @@ metadata:
 
 ## 前置检查
 
-在开始联网操作前，先检查 CDP 模式可用性：
+在开始联网操作前，优先检查 CDP extension transport：
 
 ```bash
-node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
+node "${CLAUDE_SKILL_DIR}/scripts/check-cdp.mjs"
 ```
+
+`cdp-extension: ready` 后使用 `http://127.0.0.1:3456`。若提示扩展未连接，按脚本提示一次性 Load unpacked `${CLAUDE_SKILL_DIR}/extension`。只有扩展不可用或能力不足时，再运行 `check-deps.mjs` 走 native CDP fallback。
 
 **Node.js 22+** 必需（使用原生 WebSocket）。
 
-按脚本输出处理：
-- `exit 0` → 继续
-- `exit 2` → 需询问用户偏好，写入 `${CLAUDE_SKILL_DIR}/config.env` 的 `WEB_ACCESS_BROWSER`
-- `exit 1` → 按 stdout 错误信息处理。若提示包含「Agent 处理顺序」，按其步骤执行（如先用系统命令打开浏览器后重跑），自动可解则不打扰用户；仍失败再向用户求助
-
-支持参数 `--browser <chrome|edge>` 表达本次临时覆盖（不写 config.env）。
-
-切换浏览器时，proxy 是长驻进程，需先 `pkill -f cdp-proxy.mjs` 再重跑 check-deps。
+native fallback 支持 `check-deps.mjs --browser <chrome|edge>` 表达本次临时覆盖（不写 config.env）。切换 transport 或浏览器时，proxy 是长驻进程，需先 `pkill -f cdp-proxy.mjs` 再重跑检查。
 
 检查通过后并必须在回复中向用户直接展示以下须知，再启动 CDP Proxy 执行操作：
 

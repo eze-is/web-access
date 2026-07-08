@@ -10,6 +10,11 @@ import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
 import { selectBrowser, findFallbackPort } from './browser-discovery.mjs';
+import {
+  ExtensionBridge,
+  createHttpHandler as createExtensionHttpHandler,
+  handleWebSocketUpgrade,
+} from './cdp-extension-transport.mjs';
 
 // --- 解析命令行 --browser 参数（本次启动用哪个浏览器）---
 function parseBrowserArg() {
@@ -23,6 +28,7 @@ function parseBrowserArg() {
 const BROWSER_OVERRIDE = parseBrowserArg();
 
 const PORT = parseInt(process.env.CDP_PROXY_PORT || '3456');
+const TRANSPORT = (process.env.CDP_TRANSPORT || 'extension').toLowerCase();
 let ws = null;
 let cmdId = 0;
 const pending = new Map(); // id -> {resolve, timer}
@@ -620,6 +626,15 @@ function checkPortAvailable(port) {
 }
 
 async function main() {
+  if (TRANSPORT === 'extension') {
+    await mainExtensionTransport();
+    return;
+  }
+  if (TRANSPORT !== 'native') {
+    console.error(`[CDP Proxy] unknown CDP_TRANSPORT: ${TRANSPORT}`);
+    process.exit(1);
+  }
+
   // 检查是否已有 proxy 在运行
   const available = await checkPortAvailable(PORT);
   if (!available) {
@@ -656,6 +671,53 @@ async function main() {
     clearInterval(cleanupTimer);
     await closeAllManagedTabs();
     process.exit(0);
+  };
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+}
+
+async function mainExtensionTransport() {
+  const bridge = new ExtensionBridge();
+  const extensionServer = http.createServer(createExtensionHttpHandler({ bridge }));
+
+  extensionServer.on('upgrade', (req, socket, head) => {
+    handleWebSocketUpgrade(req, socket, head, bridge);
+  });
+
+  const available = await checkPortAvailable(PORT);
+  if (!available) {
+    try {
+      const ok = await new Promise((resolve) => {
+        http.get(`http://127.0.0.1:${PORT}/health`, { timeout: 2000 }, (res) => {
+          let d = '';
+          res.on('data', c => d += c);
+          res.on('end', () => {
+            try {
+              const health = JSON.parse(d);
+              resolve(health.status === 'ok' && health.backend === 'cdp-extension');
+            } catch {
+              resolve(false);
+            }
+          });
+        }).on('error', () => resolve(false));
+      });
+      if (ok) {
+        console.log(`[CDP Proxy] extension transport already running on port ${PORT}`);
+        process.exit(0);
+      }
+    } catch { /* port occupied but not this proxy */ }
+    console.error(`[CDP Proxy] port ${PORT} is occupied`);
+    process.exit(1);
+  }
+
+  extensionServer.listen(PORT, '127.0.0.1', () => {
+    console.log(`[CDP Proxy] extension transport listening on http://127.0.0.1:${PORT}`);
+    console.log(`[CDP Proxy] extension path: ${path.resolve(import.meta.dirname, '..', 'extension')}`);
+  });
+
+  const shutdown = (sig) => {
+    console.log(`[CDP Proxy] ${sig}, shutting down extension transport...`);
+    extensionServer.close(() => process.exit(0));
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));

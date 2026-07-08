@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="web-access CDP Transport icon">
+  <defs>
+    <linearGradient id="base" x1="14" y1="12" x2="114" y2="116" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#172554"/>
+      <stop offset="0.58" stop-color="#0f766e"/>
+      <stop offset="1" stop-color="#14532d"/>
+    </linearGradient>
+    <linearGradient id="gate" x1="40" y1="31" x2="88" y2="96" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ecfeff"/>
+      <stop offset="1" stop-color="#67e8f9"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="7" stdDeviation="7" flood-color="#020617" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#base)"/>
+  <path d="M28 75c8-15 23-25 39-25 14 0 26 7 33 18" fill="none" stroke="#99f6e4" stroke-width="6" stroke-linecap="round" opacity=".55"/>
+  <path d="M26 88c12 11 27 17 43 17 13 0 25-4 35-11" fill="none" stroke="#bbf7d0" stroke-width="5" stroke-linecap="round" opacity=".45"/>
+  <g filter="url(#shadow)">
+    <path d="M43 91V55c0-15 9-25 21-25s21 10 21 25v36" fill="none" stroke="url(#gate)" stroke-width="12" stroke-linecap="round"/>
+    <path d="M51 90V56c0-10 5-17 13-17s13 7 13 17v34" fill="none" stroke="#083344" stroke-width="7" stroke-linecap="round" opacity=".72"/>
+    <path d="M45 91h38" fill="none" stroke="#ecfeff" stroke-width="10" stroke-linecap="round"/>
+  </g>
+  <path d="M26 47h20m36 0h20M64 21v19" fill="none" stroke="#fef3c7" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="22" cy="47" r="8" fill="#facc15"/>
+  <circle cx="106" cy="47" r="8" fill="#22c55e"/>
+  <circle cx="64" cy="17" r="8" fill="#38bdf8"/>
+  <circle cx="64" cy="94" r="6" fill="#f8fafc"/>
+</svg>

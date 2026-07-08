@@ -69,6 +69,7 @@ function startProxyDetached(browserOverride) {
   const child = spawn(process.execPath, args, {
     detached: true,
     stdio: ['ignore', logFd, logFd],
+    env: { ...process.env, CDP_TRANSPORT: 'native' },
     ...(os.platform() === 'win32' ? { windowsHide: true } : {}),
   });
   child.unref();
@@ -81,6 +82,10 @@ async function ensureProxy(expectedBrowserId, browserOverride) {
 
   // 复用：proxy 已运行 + 已连接浏览器 → 校验 expected vs actual
   const health = await httpGetJson(healthUrl);
+  if (health?.backend === 'cdp-extension') {
+    console.log(`proxy: extension transport 正在占用 ${PROXY_PORT}；如需 native CDP fallback，请先停止 cdp-proxy.mjs 后重跑 check-deps`);
+    return false;
+  }
   if (health?.status === 'ok' && health.connected) {
     const runningId = health.browser?.id;
     const runningLabel = health.browser?.label || runningId || 'unknown';
