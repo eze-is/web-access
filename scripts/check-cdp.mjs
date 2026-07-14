@@ -16,11 +16,13 @@ const HEALTH_URL = `http://127.0.0.1:${PORT}/health`;
 const EXTENSION_SETTLE_MS = 3000;
 const EXTENSION_WAIT_MS = 10000;
 const EXTENSION_POLL_MS = 500;
+const PROXY_STOP_WAIT_MS = 5000;
+const PROXY_STOP_POLL_MS = 100;
 
 async function main() {
   const proxyStarted = await ensureProxy();
   const health = await waitForExtension(proxyStarted);
-  if (health?.connected) {
+  if (isExtensionReady(health)) {
     console.log(`cdp-extension: ready (${health.extension?.browser || 'browser'} ${health.extension?.version || ''})`);
     process.exit(0);
   }
@@ -35,7 +37,14 @@ async function main() {
 
 async function ensureProxy() {
   const health = await getHealth();
-  if (health?.status === 'ok') return false;
+  if (health?.status === 'ok') {
+    if (health.backend === 'cdp-extension') return false;
+    if (health.backend === 'cdp-native') {
+      await stopNativeProxy(health);
+    } else {
+      throw new Error(`Port ${PORT} is occupied by an unknown backend; refusing to stop it`);
+    }
+  }
 
   const logFile = path.join(os.tmpdir(), 'web-access-cdp-proxy.log');
   const logFd = fs.openSync(logFile, 'a');
@@ -50,7 +59,8 @@ async function ensureProxy() {
 
   for (let i = 0; i < 20; i++) {
     await sleep(300);
-    if ((await getHealth())?.status === 'ok') return true;
+    const current = await getHealth();
+    if (current?.status === 'ok' && current.backend === 'cdp-extension') return true;
   }
   throw new Error(`CDP extension transport did not start; see ${logFile}`);
 }
@@ -62,11 +72,43 @@ async function waitForExtension(proxyStarted) {
   let health = null;
   do {
     health = await getHealth();
-    if (health?.connected) return health;
+    if (isExtensionReady(health)) return health;
     await sleep(EXTENSION_POLL_MS);
   } while (Date.now() < deadline);
 
   return health;
+}
+
+async function stopNativeProxy(health) {
+  const pid = Number(health.pid);
+  if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) {
+    throw new Error('Native proxy did not expose a valid pid; refusing to stop it');
+  }
+
+  console.log(`cdp-extension: stopping native proxy (pid ${pid})`);
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch (error) {
+    if (error?.code !== 'ESRCH') throw error;
+  }
+
+  const deadline = Date.now() + PROXY_STOP_WAIT_MS;
+  while (Date.now() < deadline) {
+    await sleep(PROXY_STOP_POLL_MS);
+    const current = await getHealth();
+    if (!current) return;
+    if (current.backend !== 'cdp-native' || Number(current.pid) !== pid) {
+      throw new Error(`Port ${PORT} was claimed by another backend while stopping native proxy`);
+    }
+  }
+
+  throw new Error(`Timed out waiting for native proxy ${pid} to stop`);
+}
+
+function isExtensionReady(health) {
+  return health?.status === 'ok' &&
+    health.backend === 'cdp-extension' &&
+    health.connected === true;
 }
 
 function getHealth() {

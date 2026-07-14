@@ -333,6 +333,8 @@ const server = http.createServer(async (req, res) => {
       const connected = ws && (ws.readyState === WS.OPEN || ws.readyState === 1);
       res.end(JSON.stringify({
         status: 'ok',
+        backend: 'cdp-native',
+        pid: process.pid,
         connected,
         browser: connectedBrowser,
         sessions: sessions.size,
