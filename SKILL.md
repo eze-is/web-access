@@ -1,41 +1,9 @@
 ---
 name: web-access
-license: MIT
-github: https://github.com/eze-is/web-access
-description:
-  所有联网操作必须通过此 skill 处理，包括：搜索、网页抓取、登录后操作、网络交互等。
-  触发场景：用户要求搜索信息、查看网页内容、访问需要登录的网站、操作网页界面、抓取社交媒体内容（小红书、微博、推特等）、读取动态渲染页面、以及任何需要真实浏览器环境的网络任务。
-metadata:
-  author: 一泽Eze
-  version: "2.5.3"
+description: 用于搜索或读取网页内容，以及需要浏览器登录态、动态渲染或页面交互的任务；用户明确要求网页端操作或核验时也使用。目标系统已有可完成同一目标的专用 CLI、原生 API、MCP 或连接器时优先使用，其正常联网不触发本 skill；专用工具不可用时，仅在网页端确有目标能力且不是绕过权限限制时回退。
 ---
 
 # web-access Skill
-
-## 前置检查
-
-在开始联网操作前，先检查 CDP 模式可用性：
-
-```bash
-node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
-```
-
-**Node.js 22+** 必需（使用原生 WebSocket）。
-
-按脚本输出处理：
-- `exit 0` → 继续
-- `exit 2` → 需询问用户偏好，写入 `${CLAUDE_SKILL_DIR}/config.env` 的 `WEB_ACCESS_BROWSER`
-- `exit 1` → 按 stdout 错误信息处理。若提示包含「Agent 处理顺序」，按其步骤执行（如先用系统命令打开浏览器后重跑），自动可解则不打扰用户；仍失败再向用户求助
-
-支持参数 `--browser <chrome|edge>` 表达本次临时覆盖（不写 config.env）。
-
-切换浏览器时，proxy 是长驻进程，需先 `pkill -f cdp-proxy.mjs` 再重跑 check-deps。
-
-检查通过后并必须在回复中向用户直接展示以下须知，再启动 CDP Proxy 执行操作：
-
-```
-温馨提示：部分站点对浏览器自动化操作检测严格，存在账号封禁风险。已内置防护措施但无法完全避免，Agent 继续操作即视为接受。
-```
 
 ## 浏览哲学
 
@@ -53,8 +21,6 @@ node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 
 ## 联网工具选择
 
-- **确保信息的真实性，一手信息优于二手信息**：搜索引擎和聚合平台是信息发现入口。当多次搜索尝试后没有质的改进时，升级到更根本的获取方式：定位一手来源（官网、官方平台、原始页面）。
-
 | 场景 | 工具 |
 |------|------|
 | 搜索摘要或关键词结果，发现信息来源 | **WebSearch** |
@@ -65,12 +31,16 @@ node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 
 浏览器 CDP 不要求 URL 已知——可从任意入口出发，通过页面内搜索、点击、跳转等方式找到目标内容。WebSearch、WebFetch、curl 均不处理登录态。
 
-**Jina**（可选预处理层，可与 WebFetch/curl 组合使用，由于其特性可节省 tokens 消耗，请积极在任务合适时组合使用）：第三方网络服务，可将网页转为 Markdown，大幅节省 token 但可能有信息损耗。调用方式为 `r.jina.ai/example.com`（URL 前加前缀，不保留原网址 http 前缀），限 20 RPM。适合文章、博客、文档、PDF 等以正文为核心的页面；对数据面板、商品页等非文章结构页面可能提取到错误区块。
+**Jina** 是可选的第三方预处理层，可将网页转为 Markdown。公开、非敏感的正文型长页面可优先用 Jina 预处理，以减少上下文消耗；不得发送登录态、私有链接、token 或个人化参数。调用方式为 `r.jina.ai/example.com`（去掉原网址协议后加前缀），限 20 RPM；Jina 可能造成信息损耗，对数据面板、商品页等结构页面也可能提取错区块。
+
+执行下文命令前，将 `<skill-dir>` 定义为本 `SKILL.md` 所在目录的绝对路径；下文均以此占位符引用 skill 资源。
 
 进入浏览器层后，`/eval` 就是你的眼睛和手：
 
 - **看**：用 `/eval` 查询 DOM，发现页面上的链接、按钮、表单、文本内容——相当于「看看这个页面有什么」
+
 - **做**：用 `/click` 点击元素、`/scroll` 滚动加载、`/eval` 填表提交——像人一样在页面内自然导航
+
 - **读**：用 `/eval` 提取文字内容，判断图片/视频是否承载核心信息——是则提取媒体 URL 定向读取或 `/screenshot` 视觉识别
 
 浏览网页时，**先了解页面结构，再决定下一步动作**。不需要提前规划所有步骤。
@@ -80,97 +50,76 @@ node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 用户指向**本人访问过的页面**（"我之前看的那个讲 X 的文章"、"上次打开过的 XX 面板"）或**组织内部系统**（"我们的 XX 平台"、"公司那个 YY 系统"等公网搜不到的目标）时，检索本地浏览器（Chrome / Edge）书签/历史：
 
 ```bash
-node "${CLAUDE_SKILL_DIR}/scripts/find-url.mjs" [关键词...] [--only bookmarks|history] [--browser chrome|edge] [--limit N] [--since 1d|7h|YYYY-MM-DD] [--sort recent|visits]
+node "<skill-dir>/scripts/find-url.mjs" [关键词...] [--only bookmarks|history] [--browser chrome|edge] [--limit N] [--since 1d|7h|YYYY-MM-DD] [--sort recent|visits]
 ```
 
-关键词空格分词、多词 AND，匹配 title + url（可省略）；默认遍历所有已安装的 Chromium 系浏览器（Chrome、Edge），`--browser` 限定单一来源；`--since` / `--sort` 仅作用于历史；默认按最近访问倒序，`--sort visits` 按访问次数排序（适合"高频访问的网站"这类场景）。
+关键词按空格分词并以 AND 匹配 title + URL；可用 `--only`、`--browser`、`--limit`、`--since`、`--sort` 收窄范围，默认遍历已安装的 Chrome/Edge 并按最近访问排序。
 
 ### 程序化操作与 GUI 交互
 
 浏览器内操作页面有两种方式：
 
 - **程序化方式**（构造 URL 直接导航、eval 操作 DOM）：成功时速度快、精确，但对网站来说不是正常用户行为，可能触发反爬机制。
-- **GUI 交互**（点击按钮、填写输入框、滚动浏览）：GUI 是为人设计的，网站不会限制正常的 UI 操作，确定性最高，但步骤多、速度慢。
 
-根据对目标平台的了解来灵活选择方式。GUI 交互也是程序化方式的有效探测——通过一次真实交互观察站点的实际行为（URL 模式、必需参数、页面跳转逻辑），为后续程序化操作提供依据；同时当程序化方式受阻时，GUI 交互是可靠的兜底。
+- **GUI 交互**（点击按钮、填写输入框、滚动浏览）：更接近正常用户路径，常可避开对构造 URL 或脚本调用的限制，但仍可能受页面变化、风控或交互状态影响，且步骤更多、速度较慢。
 
-**站点内交互产生的链接是可靠的**：通过用户视角中的可交互单元（卡片、条目、按钮）进行的站点内交互，自然到达的 URL 天然携带平台所需的完整上下文。而手动构造的 URL 可能缺失隐式必要参数，导致被拦截、返回错误页面、甚至触发反爬。
+根据对目标平台的了解来灵活选择方式。GUI 交互也是程序化方式的有效探测——通过一次真实交互观察站点的实际行为（URL 模式、必需参数、页面跳转逻辑），为后续程序化操作提供依据；程序化方式受阻时，可尝试 GUI 交互兜底。
+
+**优先站点内获得的完整链接**：通过卡片、条目或按钮得到的 URL 通常比手工构造更完整；但链接仍可能过期、依赖会话或受权限影响，失败时重新从站内入口获取，不据此断言内容不存在。
 
 ## 浏览器 CDP 模式
 
-通过 CDP Proxy 直连用户日常浏览器（Chrome / Edge / Chromium 等 Chromium 系），天然携带登录态，无需启动独立浏览器。
-若无用户明确要求，不主动操作用户已有 tab，所有操作都在自己创建的后台 tab 中进行，保持对用户环境的最小侵入。不关闭用户 tab 的前提下，完成任务后关闭自己创建的 tab，保持环境整洁。
+通过 CDP Proxy 直连用户日常 Chromium 系浏览器并沿用其登录态。仅在进入 CDP 执行时，先向用户展示中性提示：
 
-### 启动
+> 提示：浏览器自动化可能触发部分站点的风控并带来账号受限风险，内置措施无法完全消除此风险。
+
+再运行前置检查（需要 Node.js 22+）：
 
 ```bash
-node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
+node "<skill-dir>/scripts/check-deps.mjs"
 ```
 
-脚本会依次检查 Node.js、浏览器调试端口，并确保 Proxy 已连接（未运行则自动启动并等待）。Proxy 启动后持续运行。
+按脚本结果处理：
+
+- `exit 0`：继续。
+- `exit 2`：询问浏览器偏好并写入 `<skill-dir>/config.env` 的 `WEB_ACCESS_BROWSER`。
+- `exit 1`：按 stdout 的 Agent 处理顺序自动排障，仍失败再求助用户。
+
+`--browser <chrome|edge>` 可临时覆盖，不写配置。
+
+切换浏览器时先执行 `pkill -f cdp-proxy.mjs`，再重跑检查。
 
 ### Proxy API
 
-所有操作通过 curl 调用 HTTP API：
+检查通过后先读取 [`references/cdp-api.md`](references/cdp-api.md)，严格按其中的端点语法与错误处理执行。
 
-```bash
-# 列出用户已打开的 tab
-curl -s http://localhost:3456/targets
-
-# 创建新后台 tab（自动等待加载）— URL 走 POST body，避免目标 URL 含 query 时被切分
-curl -s -X POST --data-raw 'https://example.com' http://localhost:3456/new
-
-# 页面信息
-curl -s "http://localhost:3456/info?target=ID"
-
-# 执行任意 JS：可读写 DOM、提取数据、操控元素、触发状态变更、提交表单、调用内部方法
-curl -s -X POST "http://localhost:3456/eval?target=ID" -d 'document.title'
-
-# 捕获页面渲染状态（含视频当前帧）
-curl -s "http://localhost:3456/screenshot?target=ID&file=/tmp/shot.png"
-
-# 导航（URL 走 POST body，target 走 query）、后退
-curl -s -X POST --data-raw 'https://example.com' "http://localhost:3456/navigate?target=ID"
-curl -s "http://localhost:3456/back?target=ID"
-
-# 点击（POST body 为 CSS 选择器）— JS el.click()，简单快速，覆盖大多数场景
-curl -s -X POST "http://localhost:3456/click?target=ID" -d 'button.submit'
-
-# 真实鼠标点击 — CDP Input.dispatchMouseEvent，算用户手势，能触发文件对话框
-curl -s -X POST "http://localhost:3456/clickAt?target=ID" -d 'button.upload'
-
-# 文件上传 — 直接设置 file input 的本地文件路径，绕过文件对话框
-curl -s -X POST "http://localhost:3456/setFiles?target=ID" -d '{"selector":"input[type=file]","files":["/path/to/file.png"]}'
-
-# 滚动（触发懒加载）
-curl -s "http://localhost:3456/scroll?target=ID&y=3000"
-curl -s "http://localhost:3456/scroll?target=ID&direction=bottom"
-
-# 关闭 tab
-curl -s "http://localhost:3456/close?target=ID"
-```
+- 每个任务独立创建 target。
+- 创建后，后续页面操作始终携带对应 target ID。
+- 未经明确要求，不操作或关闭用户已有 tab。
+- 任务结束时关闭自己创建的 tab；保留用户 tab，Proxy 可持续运行。
 
 ### 页面内导航
 
-两种方式打开页面内的链接：
+- 用 `/click` 在当前 tab 内连续交互；用 `/new` 在新 tab 打开站内取得的完整 URL。`/new` 与 `/navigate` 的 URL 均放 POST body，target 放 query；完整 URL 通常优于手工构造，但可能过期、依赖会话或权限，使用中不得外发其中的敏感参数。
 
-- **`/click`**：在当前 tab 内直接点击用户视角中的可交互单元，简单直接，串行处理。适合需要在同一页面内连续操作的场景，如点击展开、翻页、进入详情等。
-- **`/new` + 完整 URL**：使用目标链接的完整地址（包含所有URL参数），在新 tab 中打开。适合需要同时访问多个页面的场景。
-
-很多网站的链接包含会话相关的参数（如 token），这些参数是正常访问所必需的。提取 URL 时应保留完整地址，不要裁剪或省略参数。URL 通过 POST body 原样传入 `/new` 或 `/navigate`。
-
-> **v2.5.3 迁移提示**：若引用的站点经验文件（`references/site-patterns/*.md`）或其它脚本中仍含 `GET /new?url=...` 或 `/navigate?target=...&url=...` 的旧写法，调用会收到迁移指引。按 [`references/migration-2.5.3.md`](references/migration-2.5.3.md) 就地改写为 POST body 后再使用，并顺手把该站点经验文件更新掉。
+- 遇到旧版 GET 写法时，当前调用按 [`references/migration-2.5.3.md`](references/migration-2.5.3.md) 临时改为 POST body；仅在用户明确要求维护本 skill 时，才更新源文件或站点经验。
 
 ### 媒体资源提取
 
 判断内容在图片里时，用 `/eval` 从 DOM 直接拿图片 URL，再定向读取——比全页截图精准得多。
 
 ### 技术事实
+
 - 页面中存在大量已加载但未展示的内容——轮播中非当前帧的图片、折叠区块的文字、懒加载占位元素等，它们存在于 DOM 中但对用户不可见。以数据结构（容器、属性、节点关系）为单位思考，可以直接触达这些内容。
+
 - DOM 中存在选择器不可跨越的边界（Shadow DOM 的 `shadowRoot`、iframe 的 `contentDocument`等）。eval 递归遍历可一次穿透所有层级，返回带标签的结构化内容，适合快速了解未知页面的完整结构。
+
 - `/scroll` 到底部会触发懒加载，使未进入视口的图片完成加载。提取图片 URL 前若未滚动，部分图片可能尚未加载。
+
 - 拿到媒体资源 URL 后，公开资源可直接下载到本地后用读取；需要登录态才可获取的资源才需要在浏览器内 navigate + screenshot。
+
 - 短时间内密集打开大量页面（如批量 `/new`）可能触发网站的反爬风控。
+
 - 平台返回的"内容不存在""页面不见了"等提示不一定反映真实状态，也可能是访问方式的问题（如 URL 缺失必要参数、触发反爬）而非内容本身的问题。
 
 ### 视频内容获取
@@ -184,37 +133,20 @@ curl -s "http://localhost:3456/close?target=ID"
 登录判断的核心问题只有一个：**目标内容拿到了吗？**
 
 打开页面后先尝试获取目标内容。只有当确认**目标内容无法获取**且判断登录能解决时，才告知用户：
+
 > "当前页面在未登录状态下无法获取[具体内容]，请在你的浏览器中登录 [网站名]，完成后告诉我继续。"
 
 登录完成后无需重启任何东西，直接刷新页面继续。
 
-### 任务结束
-
-用 `/close` 关闭自己创建的 tab，必须保留用户原有的 tab 不受影响。
-
-Proxy 持续运行，不建议主动停止——重启后需要在浏览器中重新授权 CDP 连接。
-
 ## 并行调研：子 Agent 分治策略
 
-任务包含多个**独立**调研目标时（如同时调研 N 个项目、N 个来源），鼓励合理分治给子 Agent 并行执行，而非主 Agent 串行处理。
+仅在目标彼此独立且每个单项工作量足够大时并行；有依赖或只是轻量单页查询时串行。
 
-**好处：**
-- **速度**：多子 Agent 并行，总耗时约等于单个子任务时长
-- **上下文保护**：抓取内容不进入主 Agent 上下文，主 Agent 只接收摘要，节省 token
+委派网页子任务时，明确要求子 Agent 加载并遵循 web-access skill。
 
-**并行 CDP 操作**：每个子 Agent 在当前用户浏览器实例中，自行创建所需的后台 tab（`/new`），自行操作，任务结束自行关闭（`/close`）。所有子 Agent 共享一个浏览器、一个 Proxy，通过不同 targetId 操作不同 tab，无竞态风险。
+每个 Agent 使用独立 target，并在结束时关闭自己创建的 tab、保留用户 tab。
 
-**子 Agent Prompt 写法：目标导向，而非步骤指令**
-- 必须在子 Agent prompt 中写 `必须加载 web-access skill 并遵循指引` ，子 Agent 会自动加载 skill，无需在 prompt 中复制 skill 内容或指定路径。
-- 子 Agent 有自主判断能力。主 Agent 的职责是说清楚**要什么**，仅在必要与确信时限定**怎么做**。过度指定步骤会剥夺子 Agent 的判断空间，反而引入主 Agent 的假设错误。**避免 prompt 用词对子 Agent 行为的暗示**：「搜索xx」会把子 Agent 锚定到 WebSearch，而实际上有些反爬站点需要 CDP 直接访问主站才能有效获取内容。主 Agent 写 prompt 时应描述目标（「获取」「调研」「了解」），避免用暗示具体手段的动词（「搜索」「抓取」「爬取」）。
-
-**分治判断标准：**
-
-| 适合分治 | 不适合分治 |
-|----------|-----------|
-| 目标相互独立，结果互不依赖 | 目标有依赖关系，下一个需要上一个的结果 |
-| 每个子任务量足够大（多页抓取、多轮搜索） | 简单单页查询，分治开销大于收益 |
-| 需要 CDP 浏览器或长时间运行的任务 | 几次 WebSearch / Jina 就能完成的轻量查询 |
+不同 target 仍共享登录态、站点全局状态和限流，可能发生竞态；避免并发执行会相互影响的操作。
 
 ## 信息核实类任务
 
@@ -222,44 +154,24 @@ Proxy 持续运行，不建议主动停止——重启后需要在浏览器中�
 
 搜索引擎和聚合平台是信息发现入口，是**定位**信息的工具，不可用于直接**证明**真伪。找到来源后，直接访问读取原文。同一原则适用于工具能力/用法的调研——官方文档是一手来源，不确定时先查文档或源码，不猜测。
 
-| 信息类型 | 一手来源 |
-|----------|---------|
-| 政策/法规 | 发布机构官网 |
-| 企业公告 | 公司官方新闻页 |
-| 学术声明 | 原始论文/机构官网 |
-| 工具能力/用法 | 官方文档、源码 |
+一手来源例如政策发布机构官网、公司公告页、原始论文或机构官网、工具官方文档与源码。
 
 **找不到官网时**：权威媒体的原创报道（非转载）可作为次级依据，但需向用户说明："未找到官方原文，以下核实来自[媒体名]报道，存在转述误差可能。"单一来源时同样向用户声明。
 
+- 搜索涉及社区、社交平台、商品口碑或其他公开可评论内容时，主动抽查评论区；优先看高赞、质疑、纠错、附来源或含可验证细节的评论。评论可提供不弱于正文的线索，但点赞数本身不证明真实性，重要主张仍需回到一手来源或交叉核实。
+- 公开平台的评论量若相对发布时间、可见曝光及同账号/同类内容明显偏低，仅将其视为需要加强真实性与互动自然度核查的弱风险信号；先排除新发布、低曝光、小众受众、限评、关评、审核或删除、评论折叠及平台展示机制，不得仅凭评论少判定虚假。
+
 ## 站点经验
 
-操作中积累的特定网站经验，按域名存储在 `references/site-patterns/` 下。
-
-确定目标网站后，如果前置检查输出的 site-patterns 列表中有匹配的站点，必须读取对应文件获取先验知识（平台特征、有效模式、已知陷阱）。经验内容标注了发现日期，当作可能有效的提示而非保证——如果按经验操作失败，回退通用模式并更新经验文件。
-
-CDP 操作成功完成后，如果发现了有必要记录经验的新站点或新模式（URL 结构、平台特征、操作策略），主动写入对应的站点经验文件。只写经过验证的事实，不写未确认的猜测。
-
-文件格式：
-```markdown
----
-domain: example.com
-aliases: [示例, Example]
-updated: 2026-03-19
----
-## 平台特征
-架构、反爬行为、登录需求、内容加载方式等事实
-
-## 有效模式
-已验证的 URL 模式、操作策略、选择器
-
-## 已知陷阱
-什么会失败以及为什么
-```
-经验/陷阱内容标注发现日期，当作"可能有效的提示"而非"保证正确的事实"。
+- 站点经验按域名存于 `references/site-patterns/`；命中目标域名时读取对应文件。
+- 把带日期的经验视为待验证提示，而非保证。
+- 若经验失败，回退通用模式。
+- 普通网页任务不写入 skill；仅在用户明确要求维护本 skill 时，才把本次已验证的事实写入对应经验文件，不记录猜测。
 
 ## References 索引
 
 | 文件 | 何时加载 |
 |------|---------|
-| `references/cdp-api.md` | 需要 CDP API 详细参考、JS 提取模式、错误处理时 |
+| `references/cdp-api.md` | 每次进入 CDP 执行时 |
+| `references/migration-2.5.3.md` | 遇到旧版导航端点写法时 |
 | `references/site-patterns/{domain}.md` | 确定目标网站后，读取对应站点经验 |
