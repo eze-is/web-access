@@ -99,7 +99,18 @@ async function discoverChromePort() {
   return null;
 }
 
-function getWebSocketUrl(port, wsPath) {
+async function getWebSocketUrl(port, wsPath) {
+  // 优先用 /json/version 的实时 webSocketDebuggerUrl：
+  // 1) 显式 --remote-debugging-port 启动时，浏览器级端点带 UUID，裸 /devtools/browser 连不上；
+  // 2) DevToolsActivePort 里的 UUID 可能是旧实例残留（端口被别的实例接管后不一致）。
+  // 取不到（如 chrome://inspect 授权模式下 /json 被锁返回 404）再回退到已发现的 wsPath。
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(2000) });
+    if (r.ok) {
+      const j = await r.json();
+      if (j.webSocketDebuggerUrl) return j.webSocketDebuggerUrl;
+    }
+  } catch { /* /json 不可用则回退 */ }
   if (wsPath) return `ws://127.0.0.1:${port}${wsPath}`;
   return `ws://127.0.0.1:${port}/devtools/browser`;
 }
@@ -127,7 +138,7 @@ async function connect() {
     chromeWsPath = discovered.wsPath;
   }
 
-  const wsUrl = getWebSocketUrl(chromePort, chromeWsPath);
+  const wsUrl = await getWebSocketUrl(chromePort, chromeWsPath);
   if (!wsUrl) throw new Error('无法获取 Chrome WebSocket URL');
 
   return connectingPromise = new Promise((resolve, reject) => {
