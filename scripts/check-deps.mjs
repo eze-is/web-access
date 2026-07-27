@@ -63,6 +63,15 @@ function activePortFiles() {
 }
 
 async function detectChromePort() {
+  const explicitPort = parseInt(process.env.CDP_CHROME_PORT || '', 10);
+  const strictExplicitPort = /^(1|true|yes)$/i.test(process.env.CDP_CHROME_PORT_STRICT || '');
+  if (explicitPort > 0 && explicitPort < 65536 && await checkPort(explicitPort)) {
+    return explicitPort;
+  }
+  if (explicitPort > 0 && explicitPort < 65536 && strictExplicitPort) {
+    return null;
+  }
+
   // 优先从 DevToolsActivePort 文件读取
   for (const filePath of activePortFiles()) {
     try {

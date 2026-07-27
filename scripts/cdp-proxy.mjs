@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
+import { request as httpRequest } from 'node:http';
 
 const PORT = parseInt(process.env.CDP_PROXY_PORT || '3456');
 let ws = null;
@@ -37,6 +38,20 @@ if (typeof globalThis.WebSocket !== 'undefined') {
 
 // --- 自动发现 Chrome 调试端口 ---
 async function discoverChromePort() {
+  const explicitPort = parseInt(process.env.CDP_CHROME_PORT || '', 10);
+  const strictExplicitPort = /^(1|true|yes)$/i.test(process.env.CDP_CHROME_PORT_STRICT || '');
+  if (explicitPort > 0 && explicitPort < 65536) {
+    const ok = await checkPort(explicitPort);
+    if (ok) {
+      const wsPath = await getBrowserWsPathFromJson(explicitPort);
+      console.log(`[CDP Proxy] 使用 CDP_CHROME_PORT 指定端口: ${explicitPort}${wsPath ? ' (带 wsPath)' : ''}`);
+      return { port: explicitPort, wsPath };
+    }
+    if (strictExplicitPort) {
+      return null;
+    }
+  }
+
   // 1. 尝试读 DevToolsActivePort 文件
   const possiblePaths = [];
   const platform = os.platform();
@@ -85,12 +100,43 @@ async function discoverChromePort() {
   for (const port of commonPorts) {
     const ok = await checkPort(port);
     if (ok) {
-      console.log(`[CDP Proxy] 扫描发现 Chrome 调试端口: ${port}`);
-      return { port, wsPath: null };
+      const wsPath = await getBrowserWsPathFromJson(port);
+      console.log(`[CDP Proxy] 扫描发现 Chrome 调试端口: ${port}${wsPath ? ' (带 wsPath)' : ''}`);
+      return { port, wsPath };
     }
   }
 
   return null;
+}
+
+function getBrowserWsPathFromJson(port) {
+  return new Promise((resolve) => {
+    const req = httpRequest({
+      hostname: '127.0.0.1',
+      port,
+      path: '/json/version',
+      method: 'GET',
+      timeout: 2000,
+    }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => { body += chunk; });
+      res.on('end', () => {
+        try {
+          const data = JSON.parse(body);
+          if (data.webSocketDebuggerUrl) {
+            const url = new URL(data.webSocketDebuggerUrl);
+            resolve(url.pathname);
+            return;
+          }
+        } catch {}
+        resolve(null);
+      });
+    });
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+    req.on('error', () => resolve(null));
+    req.end();
+  });
 }
 
 // 用 TCP 探测端口是否监听——避免 WebSocket 连接触发 Chrome 安全弹窗
