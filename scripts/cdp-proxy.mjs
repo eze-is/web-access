@@ -312,6 +312,21 @@ async function readBody(req) {
   return body;
 }
 
+// 回写 CDP 响应。协议级失败时 resp.result 为 undefined，
+// JSON.stringify(undefined) 返回 undefined 而非字符串，res.end(undefined)
+// 会以 HTTP 200 + 空 body 结束，调用方无从判断失败。这里显式区分两者。
+function endWithCDPResult(res, resp) {
+  if (resp.error) {
+    res.statusCode = 400;
+    res.end(JSON.stringify({
+      error: resp.error.message || 'CDP protocol error',
+      code: resp.error.code,
+    }));
+    return;
+  }
+  res.end(JSON.stringify(resp.result ?? {}));
+}
+
 // --- HTTP API ---
 const server = http.createServer(async (req, res) => {
   const parsed = new URL(req.url, `http://localhost:${PORT}`);
@@ -378,7 +393,7 @@ const server = http.createServer(async (req, res) => {
       const resp = await sendCDP('Target.closeTarget', { targetId: q.target });
       sessions.delete(q.target);
       managedTabs.delete(q.target);
-      res.end(JSON.stringify(resp.result));
+      endWithCDPResult(res, resp);
     }
 
     // POST /navigate?target=xxx (body=URL) - 导航（自动等待加载）
@@ -393,13 +408,27 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const targetUrl = (await readBody(req)).trim();
+      if (!targetUrl) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({
+          error: 'URL 不能为空，请通过 POST body 传入',
+          example: "curl -X POST --data-raw 'https://example.com' 'http://localhost:3456/navigate?target=ID'",
+        }));
+        return;
+      }
       const sid = await ensureSession(q.target);
       const resp = await sendCDP('Page.navigate', { url: targetUrl }, sid);
+
+      // 协议级失败（如 session 已失效）时不再等待加载，直接透出错误
+      if (resp.error) {
+        endWithCDPResult(res, resp);
+        return;
+      }
 
       // 等待页面加载完成
       await waitForLoad(sid);
 
-      res.end(JSON.stringify(resp.result));
+      endWithCDPResult(res, resp);
     }
 
     // GET /back?target=xxx - 后退
