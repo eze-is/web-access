@@ -139,8 +139,12 @@ curl -s -X POST "http://localhost:3456/click?target=ID" -d 'button.submit'
 # 真实鼠标点击 — CDP Input.dispatchMouseEvent，算用户手势，能触发文件对话框
 curl -s -X POST "http://localhost:3456/clickAt?target=ID" -d 'button.upload'
 
-# 文件上传 — 直接设置 file input 的本地文件路径，绕过文件对话框
+# 主文档文件上传 — 直接设置 file input，绕过 Finder/Explorer 的 Open/Save 对话框
 curl -s -X POST "http://localhost:3456/setFiles?target=ID" -d '{"selector":"input[type=file]","files":["/path/to/file.png"]}'
+
+# 跨域 iframe/OOPIF 文件上传 — 复用同一 proxy WebSocket；用稳定 URL 子串限定 frame
+curl -s -X POST "http://localhost:3456/setFiles?target=ID" \
+  -d '{"selector":"input[type=file]","files":["/path/to/file.pdf"],"frameUrl":"upload.example.com"}'
 
 # 滚动（触发懒加载）
 curl -s "http://localhost:3456/scroll?target=ID&y=3000"
@@ -157,6 +161,12 @@ curl -s "http://localhost:3456/close?target=ID"
 - **`/click`**：在当前 tab 内直接点击用户视角中的可交互单元，简单直接，串行处理。适合需要在同一页面内连续操作的场景，如点击展开、翻页、进入详情等。
 - **`/new` + 完整 URL**：使用目标链接的完整地址（包含所有URL参数），在新 tab 中打开。适合需要同时访问多个页面的场景。
 
+### 文件上传
+
+- 任务全程复用同一个长驻 proxy 和同一个业务 `targetId`。不得为文件上传停止/重启 proxy，也不得另起 Playwright、Puppeteer 或第二条 CDP WebSocket。
+- 跨域 iframe/OOPIF 中的文件控件使用 `/setFiles` 的 `frameUrl` 限定；仍有多个候选时再提供 `frameIndex`。不要用固定屏幕坐标猜测文件控件。
+- 自动上传直接设置 file input，不打开系统 Open/Save 窗口。用户主动点击“下载”后出现 Save 窗口属于下载流程，不代表 `/setFiles` 失败。
+
 很多网站的链接包含会话相关的参数（如 token），这些参数是正常访问所必需的。提取 URL 时应保留完整地址，不要裁剪或省略参数。URL 通过 POST body 原样传入 `/new` 或 `/navigate`。
 
 > **v2.5.3 迁移提示**：若引用的站点经验文件（`references/site-patterns/*.md`）或其它脚本中仍含 `GET /new?url=...` 或 `/navigate?target=...&url=...` 的旧写法，调用会收到迁移指引。按 [`references/migration-2.5.3.md`](references/migration-2.5.3.md) 就地改写为 POST body 后再使用，并顺手把该站点经验文件更新掉。
@@ -167,7 +177,7 @@ curl -s "http://localhost:3456/close?target=ID"
 
 ### 技术事实
 - 页面中存在大量已加载但未展示的内容——轮播中非当前帧的图片、折叠区块的文字、懒加载占位元素等，它们存在于 DOM 中但对用户不可见。以数据结构（容器、属性、节点关系）为单位思考，可以直接触达这些内容。
-- DOM 中存在选择器不可跨越的边界（Shadow DOM 的 `shadowRoot`、iframe 的 `contentDocument`等）。eval 递归遍历可一次穿透所有层级，返回带标签的结构化内容，适合快速了解未知页面的完整结构。
+- DOM 中存在选择器不可跨越的边界。开放的 Shadow DOM 和同进程 iframe 可递归读取；跨域 OOPIF 需要附加其独立 CDP session。文件上传使用 `/setFiles`，由同一 proxy 按 target 父子关系限定到指定页面。
 - `/scroll` 到底部会触发懒加载，使未进入视口的图片完成加载。提取图片 URL 前若未滚动，部分图片可能尚未加载。
 - 拿到媒体资源 URL 后，公开资源可直接下载到本地后用读取；需要登录态才可获取的资源才需要在浏览器内 navigate + screenshot。
 - 短时间内密集打开大量页面（如批量 `/new`）可能触发网站的反爬风控。

@@ -74,9 +74,25 @@ curl -s -X POST "http://localhost:3456/clickAt?target=ID" -d 'button.upload'
 ```
 
 ### POST /setFiles?target=ID
-给 file input 设置本地文件路径（`DOM.setFileInputFiles`），完全绕过文件对话框。POST body 为 JSON。
+在主文档、同进程 iframe/开放 Shadow DOM，或属于指定页面的跨域 iframe/OOPIF 中给 file input 设置本地文件路径（`DOM.setFileInputFiles`）。操作复用 proxy 已有的 browser WebSocket，完全绕过系统 Open/Save 对话框。
+
+- `selector`：必填，非空 CSS selector。
+- `files`：必填，非空路径数组；路径会转换为绝对路径、去重，并验证存在且为普通文件。
+- `frameUrl`：可选，以稳定 URL 子串限定 document/frame。
+- `frameIndex`：可选，仍有多个候选时从 0 开始明确选择。
+- 只有一个候选时自动选择；多个候选且限定不足时返回 `409`，不会猜测或修改任何控件。
+
 ```bash
 curl -s -X POST "http://localhost:3456/setFiles?target=ID" -d '{"selector":"input[type=file]","files":["/path/to/file1.png","/path/to/file2.png"]}'
+
+curl -s -X POST "http://localhost:3456/setFiles?target=ID" \
+  -d '{"selector":"input[type=file]","files":["/path/to/file.pdf"],"frameUrl":"upload.example.com"}'
+```
+
+成功响应会说明实际使用的上下文：
+
+```json
+{"success":true,"files":1,"targetId":"...","context":"iframe","frameUrl":"https://upload.example.com/form"}
 ```
 
 ### GET /scroll?target=ID&y=3000&direction=down
@@ -108,3 +124,4 @@ curl -s "http://localhost:3456/screenshot?target=ID&file=/tmp/shot.png"
 | `attach 失败` | targetId 无效或 tab 已关闭 | 用 `/targets` 获取最新列表 |
 | `CDP 命令超时` | 页面长时间未响应 | 重试或检查 tab 状态 |
 | `端口已被占用` | 另一个 proxy 已在运行 | 已有实例可直接复用 |
+| `找到多个匹配文件控件` | selector/frameUrl 限定不足 | 增加稳定的 `frameUrl`，必要时再提供 `frameIndex` |
