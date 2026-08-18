@@ -75,6 +75,42 @@ CDP 浏览器级真实鼠标点击（`Input.dispatchMouseEvent`），POST body �
 curl -s -X POST "http://localhost:3456/clickAt?target=ID" -d 'button.upload'
 ```
 
+### POST /drag?target=ID
+CDP 浏览器级真实鼠标拖拽。`source` 是起点元素的 CSS 选择器；终点可用 `target` 元素选择器，或用 `deltaX` / `deltaY` 指定相对于起点中心的位移。
+
+拖到目标元素中心：
+
+```bash
+curl -s -X POST "http://localhost:3456/drag?target=ID" \
+  -d '{"source":".card","target":".drop-zone","steps":12,"durationMs":300}'
+```
+
+按相对位移拖动：
+
+```bash
+curl -s -X POST "http://localhost:3456/drag?target=ID" \
+  -d '{"source":".slider-handle","deltaX":240,"deltaY":0,"steps":12,"durationMs":300}'
+```
+
+- `target` 与 `deltaX` / `deltaY` 不能同时使用。
+- `steps` 默认 `12`，范围为 `1` 到 `100`。
+- `durationMs` 默认 `300`，范围为 `0` 到 `10000`。
+- 拖拽前会通过 `Page.bringToFront` 激活目标标签页，以避免 Chromium 对后台连续输入事件进行节流；这会改变浏览器当前标签页，接口不会自动恢复先前标签页。
+- 源元素和目标元素必须有非零尺寸、中心点未被遮挡，并位于当前页面视口中；相对位移的终点也必须位于视口中。
+- `/drag` 与 `/clickAt` 的真实鼠标事件会串行执行，避免并发请求互相释放按键。
+
+成功时返回起点、终点、步数和持续时间：
+
+```json
+{
+  "dragged": true,
+  "from": { "x": 120, "y": 200 },
+  "to": { "x": 360, "y": 200 },
+  "steps": 12,
+  "durationMs": 300
+}
+```
+
 ### POST /setFiles?target=ID
 给 file input 设置本地文件路径（`DOM.setFileInputFiles`），完全绕过文件对话框。POST body 为 JSON。
 ```bash

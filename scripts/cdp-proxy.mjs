@@ -319,6 +319,25 @@ async function readBody(req) {
   return body;
 }
 
+// 浏览器级鼠标输入共享同一个真实指针状态，必须串行执行，避免请求之间互相释放按键。
+let inputQueue = Promise.resolve();
+async function withInputLock(action) {
+  let releaseLock;
+  const previous = inputQueue;
+  inputQueue = new Promise(resolve => { releaseLock = resolve; });
+  await previous;
+  try {
+    return await action();
+  } finally {
+    releaseLock();
+  }
+}
+
+async function dispatchMouseEvent(params, sessionId) {
+  const response = await sendCDP('Input.dispatchMouseEvent', params, sessionId);
+  if (response.error) throw new Error(response.error.message || JSON.stringify(response.error));
+}
+
 // --- HTTP API ---
 const server = http.createServer(async (req, res) => {
   const parsed = new URL(req.url, `http://localhost:${PORT}`);
@@ -504,13 +523,247 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify(coord || coordResp.result));
         return;
       }
-      await sendCDP('Input.dispatchMouseEvent', {
-        type: 'mousePressed', x: coord.x, y: coord.y, button: 'left', clickCount: 1
-      }, sid);
-      await sendCDP('Input.dispatchMouseEvent', {
-        type: 'mouseReleased', x: coord.x, y: coord.y, button: 'left', clickCount: 1
-      }, sid);
+      await withInputLock(async () => {
+        let releaseRequired = false;
+        let primaryError = null;
+        try {
+          releaseRequired = true;
+          await dispatchMouseEvent({
+            type: 'mousePressed', x: coord.x, y: coord.y, button: 'left', buttons: 1, clickCount: 1
+          }, sid);
+        } catch (error) {
+          primaryError = error;
+        } finally {
+          if (releaseRequired) {
+            try {
+              await dispatchMouseEvent({
+                type: 'mouseReleased', x: coord.x, y: coord.y, button: 'left', buttons: 0, clickCount: 1
+              }, sid);
+            } catch (releaseError) {
+              if (!primaryError) primaryError = releaseError;
+            }
+          }
+        }
+        if (primaryError) throw primaryError;
+      });
       res.end(JSON.stringify({ clicked: true, x: coord.x, y: coord.y, tag: coord.tag, text: coord.text }));
+    }
+
+    // POST /drag?target=xxx — CDP 浏览器级真实鼠标拖拽
+    // body: JSON { source, target? } 或 { source, deltaX?, deltaY? }，另支持 steps、durationMs
+    else if (pathname === '/drag') {
+      let body;
+      try {
+        body = JSON.parse(await readBody(req));
+      } catch {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: 'POST body 必须是合法 JSON' }));
+        return;
+      }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: 'POST body 必须是 JSON 对象' }));
+        return;
+      }
+      if (typeof body.source !== 'string' || !body.source.trim()) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: '需要 source CSS 选择器' }));
+        return;
+      }
+      const hasTargetField = Object.hasOwn(body, 'target');
+      const hasDeltaXField = Object.hasOwn(body, 'deltaX');
+      const hasDeltaYField = Object.hasOwn(body, 'deltaY');
+      if (hasTargetField && (typeof body.target !== 'string' || !body.target.trim())) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: 'target 必须是非空字符串' }));
+        return;
+      }
+      if (hasDeltaXField && !Number.isFinite(body.deltaX)) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: 'deltaX 必须是数字' }));
+        return;
+      }
+      if (hasDeltaYField && !Number.isFinite(body.deltaY)) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: 'deltaY 必须是数字' }));
+        return;
+      }
+      const hasTarget = hasTargetField;
+      const hasDelta = hasDeltaXField || hasDeltaYField;
+      if (!hasTarget && !hasDelta) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: '需要 target，或 deltaX/deltaY' }));
+        return;
+      }
+      if (hasTarget && hasDelta) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: 'target 与 deltaX/deltaY 不能同时使用' }));
+        return;
+      }
+      const steps = body.steps === undefined ? 12 : body.steps;
+      const durationMs = body.durationMs === undefined ? 300 : body.durationMs;
+      if (!Number.isInteger(steps) || steps < 1 || steps > 100) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: 'steps 必须是 1 到 100 之间的整数' }));
+        return;
+      }
+      if (!Number.isFinite(durationMs) || durationMs < 0 || durationMs > 10000) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: 'durationMs 必须是 0 到 10000 之间的数字' }));
+        return;
+      }
+      if (!q.target) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: '需要 target tab ID' }));
+        return;
+      }
+
+      const targetsResponse = await sendCDP('Target.getTargets');
+      if (targetsResponse.error) {
+        throw new Error(targetsResponse.error.message || JSON.stringify(targetsResponse.error));
+      }
+      const targetExists = targetsResponse.result?.targetInfos?.some(target => target.targetId === q.target);
+      if (!targetExists) {
+        res.statusCode = 404;
+        res.end(JSON.stringify({ error: '未找到 target tab ID: ' + q.target }));
+        return;
+      }
+
+      const sid = await ensureSession(q.target);
+      let position;
+      let positionError;
+
+      await withInputLock(async () => {
+        const frontResponse = await sendCDP('Page.bringToFront', {}, sid);
+        if (frontResponse.error) throw new Error(frontResponse.error.message || JSON.stringify(frontResponse.error));
+
+        const sourceJson = JSON.stringify(body.source);
+        const targetJson = hasTarget ? JSON.stringify(body.target) : 'null';
+        const positionJs = `(() => {
+          try {
+            const source = document.querySelector(${sourceJson});
+            if (!source) return { error: '未找到元素: ' + ${sourceJson} };
+            source.scrollIntoView({ block: 'center', inline: 'center' });
+            const rect = source.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return { error: '源元素尺寸必须大于 0' };
+            const startX = rect.x + rect.width / 2;
+            const startY = rect.y + rect.height / 2;
+            if (![startX, startY].every(Number.isFinite)) return { error: '源元素坐标无效' };
+            if (startX < 0 || startX >= innerWidth || startY < 0 || startY >= innerHeight) {
+              return { error: '源元素中心不在当前视口中' };
+            }
+            const hitElement = document.elementFromPoint(startX, startY);
+            if (!hitElement || (hitElement !== source && !source.contains(hitElement))) {
+              return { error: '源元素中心被其他元素遮挡' };
+            }
+            const targetSelector = ${targetJson};
+            let endX;
+            let endY;
+            let targetTag = null;
+            if (targetSelector) {
+              const target = document.querySelector(targetSelector);
+              if (!target) return { error: '未找到元素: ' + targetSelector };
+              const targetRect = target.getBoundingClientRect();
+              if (targetRect.width <= 0 || targetRect.height <= 0) return { error: '目标元素尺寸必须大于 0' };
+              endX = targetRect.x + targetRect.width / 2;
+              endY = targetRect.y + targetRect.height / 2;
+              if (![endX, endY].every(Number.isFinite)) return { error: '目标元素坐标无效' };
+              if (endX < 0 || endX >= innerWidth || endY < 0 || endY >= innerHeight) {
+                return { error: '目标元素中心不在当前视口中' };
+              }
+              const targetHitElement = document.elementFromPoint(endX, endY);
+              if (!targetHitElement || (targetHitElement !== target && !target.contains(targetHitElement))) {
+                return { error: '目标元素中心被其他元素遮挡' };
+              }
+              targetTag = target.tagName;
+            } else {
+              endX = startX + ${Number.isFinite(body.deltaX) ? body.deltaX : 0};
+              endY = startY + ${Number.isFinite(body.deltaY) ? body.deltaY : 0};
+              if (![endX, endY].every(Number.isFinite)) return { error: '拖拽终点坐标无效' };
+              if (endX < 0 || endX >= innerWidth || endY < 0 || endY >= innerHeight) {
+                return { error: '拖拽终点不在当前视口中' };
+              }
+            }
+            return {
+              startX,
+              startY,
+              endX,
+              endY,
+              tag: source.tagName,
+              targetTag,
+              hitTag: hitElement?.tagName || null,
+              hitId: hitElement?.id || null,
+            };
+          } catch (error) {
+            return { error: error.message };
+          }
+        })()`;
+        const positionResp = await sendCDP('Runtime.evaluate', {
+          expression: positionJs,
+          returnByValue: true,
+          awaitPromise: true,
+        }, sid);
+        position = positionResp.result?.result?.value;
+        if (!position || position.error) {
+          positionError = position || positionResp.result || { error: '无法获取元素坐标' };
+          return;
+        }
+
+        let currentX = position.startX;
+        let currentY = position.startY;
+        let releaseRequired = false;
+        let primaryError = null;
+        try {
+          // scrollIntoView 可能异步产生一次无按键的 mousemove；先等它落稳，避免混入拖动阶段。
+          await new Promise(resolve => setTimeout(resolve, 100));
+          await dispatchMouseEvent({
+            type: 'mouseMoved', x: currentX, y: currentY, button: 'none', buttons: 0
+          }, sid);
+          await new Promise(resolve => setTimeout(resolve, 50));
+          releaseRequired = true;
+          await dispatchMouseEvent({
+            type: 'mousePressed', x: currentX, y: currentY, button: 'left', buttons: 1, clickCount: 1
+          }, sid);
+          const delayMs = durationMs / steps;
+          for (let step = 1; step <= steps; step++) {
+            currentX = position.startX + (position.endX - position.startX) * step / steps;
+            currentY = position.startY + (position.endY - position.startY) * step / steps;
+            await dispatchMouseEvent({
+              type: 'mouseMoved', x: currentX, y: currentY, button: 'left', buttons: 1
+            }, sid);
+            if (delayMs > 0) await new Promise(resolve => setTimeout(resolve, delayMs));
+          }
+        } catch (error) {
+          primaryError = error;
+        } finally {
+          if (releaseRequired) {
+            try {
+              await dispatchMouseEvent({
+                type: 'mouseReleased', x: currentX, y: currentY, button: 'left', buttons: 0, clickCount: 1
+              }, sid);
+            } catch (releaseError) {
+              if (!primaryError) primaryError = releaseError;
+            }
+          }
+        }
+        if (primaryError) throw primaryError;
+      });
+
+      if (positionError) {
+        res.statusCode = 400;
+        res.end(JSON.stringify(positionError));
+        return;
+      }
+      res.end(JSON.stringify({
+        dragged: true,
+        from: { x: position.startX, y: position.startY },
+        to: { x: position.endX, y: position.endY },
+        steps,
+        durationMs,
+        tag: position.tag,
+        targetTag: position.targetTag,
+        hit: { tag: position.hitTag, id: position.hitId },
+      }));
     }
 
     // POST /setFiles?target=xxx — 给 file input 设置本地文件（绕过文件对话框）
@@ -608,6 +861,7 @@ const server = http.createServer(async (req, res) => {
           '/info?target=': 'GET - 页面标题/URL/状态',
           '/eval?target=': 'POST body=JS表达式 - 执行 JS',
           '/click?target=': 'POST body=CSS选择器 - 点击元素',
+          '/drag?target=': 'POST body=JSON - 拖拽元素',
           '/scroll?target=&y=&direction=': 'GET - 滚动页面',
           '/screenshot?target=&file=': 'GET - 截图',
         },
@@ -652,7 +906,8 @@ async function main() {
   }
 
   server.listen(PORT, '127.0.0.1', () => {
-    console.log(`[CDP Proxy] 运行在 http://localhost:${PORT}`);
+    const listeningPort = server.address().port;
+    console.log(`[CDP Proxy] 运行在 http://localhost:${listeningPort}`);
     // 启动时尝试连接 Chrome（非阻塞）
     connect().catch(e => console.error('[CDP Proxy] 初始连接失败:', e.message, '（将在首次请求时重试）'));
   });
