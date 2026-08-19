@@ -205,7 +205,7 @@ MIT · 作者：[一泽 Eze](https://github.com/eze-is) · [官网](https://web-
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=eze-is/web-access&type=Date)](https://star-history.com/#eze-is/web-access&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=eze-is/web-access&type=Date)](https://star-history.dera.page/#eze-is/web-access&Date)
 
 ## Clawhub Download History
 
