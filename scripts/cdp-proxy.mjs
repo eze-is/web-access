@@ -10,6 +10,7 @@ import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
 import { selectBrowser, findFallbackPort } from './browser-discovery.mjs';
+import { createSetFilesAcrossFrames, SetFilesError } from './set-files.mjs';
 
 // --- 解析命令行 --browser 参数（本次启动用哪个浏览器）---
 function parseBrowserArg() {
@@ -230,6 +231,8 @@ async function ensureSession(targetId) {
   }
   throw new Error('attach 失败: ' + JSON.stringify(resp.error));
 }
+
+const setFilesAcrossFrames = createSetFilesAcrossFrames({ sendCDP, ensureSession });
 
 // 拦截页面对 Chrome 调试端口的探测（反风控）
 // 只拦截 127.0.0.1:{chromePort} 的请求，不影响其他任何本地服务
@@ -513,34 +516,18 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ clicked: true, x: coord.x, y: coord.y, tag: coord.tag, text: coord.text }));
     }
 
-    // POST /setFiles?target=xxx — 给 file input 设置本地文件（绕过文件对话框）
-    // body: JSON { "selector": "input[type=file]", "files": ["/path/to/file1.png", "/path/to/file2.png"] }
+    // POST /setFiles?target=xxx — 在主文档或该页面的跨域 iframe/OOPIF 中设置文件
+    // body: JSON { "selector": "input[type=file]", "files": ["/path/to/file.pdf"], "frameUrl": "upload.example.com", "frameIndex": 0 }
     else if (pathname === '/setFiles') {
-      const sid = await ensureSession(q.target);
-      const body = JSON.parse(await readBody(req));
-      if (!body.selector || !body.files) {
+      let body;
+      try {
+        body = JSON.parse(await readBody(req));
+      } catch {
         res.statusCode = 400;
-        res.end(JSON.stringify({ error: '需要 selector 和 files 字段' }));
+        res.end(JSON.stringify({ error: 'POST body 必须是 JSON' }));
         return;
       }
-      // 获取 DOM 节点
-      await sendCDP('DOM.enable', {}, sid);
-      const doc = await sendCDP('DOM.getDocument', {}, sid);
-      const node = await sendCDP('DOM.querySelector', {
-        nodeId: doc.result.root.nodeId,
-        selector: body.selector
-      }, sid);
-      if (!node.result?.nodeId) {
-        res.statusCode = 400;
-        res.end(JSON.stringify({ error: '未找到元素: ' + body.selector }));
-        return;
-      }
-      // 设置文件
-      await sendCDP('DOM.setFileInputFiles', {
-        nodeId: node.result.nodeId,
-        files: body.files
-      }, sid);
-      res.end(JSON.stringify({ success: true, files: body.files.length }));
+      res.end(JSON.stringify(await setFilesAcrossFrames(q.target, body)));
     }
 
     // GET /scroll?target=xxx&y=3000 - 滚动
@@ -614,7 +601,7 @@ const server = http.createServer(async (req, res) => {
       }));
     }
   } catch (e) {
-    res.statusCode = 500;
+    res.statusCode = e instanceof SetFilesError ? e.statusCode : 500;
     res.end(JSON.stringify({ error: e.message }));
   }
 });
