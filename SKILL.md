@@ -150,6 +150,11 @@ curl -s -X POST "http://localhost:3456/clickAt?target=ID" -d 'button.upload'
 # 文件上传 — 直接设置 file input 的本地文件路径，绕过文件对话框
 curl -s -X POST "http://localhost:3456/setFiles?target=ID" -d '{"selector":"input[type=file]","files":["/path/to/file.png"]}'
 
+# 一次性提取页面结构化信息（链接/图片/视频/正文/时间等）
+curl -s "http://localhost:3456/extract?target=ID"
+# 或传 URL 一步到位（自动开 tab → 提取 → 关闭）
+curl -s "http://localhost:3456/extract?url=https://example.com"
+
 # 滚动（触发懒加载）
 curl -s "http://localhost:3456/scroll?target=ID&y=3000"
 curl -s "http://localhost:3456/scroll?target=ID&direction=bottom"
@@ -168,6 +173,12 @@ curl -s "http://localhost:3456/close?target=ID"
 很多网站的链接包含会话相关的参数（如 token），这些参数是正常访问所必需的。提取 URL 时应保留完整地址，不要裁剪或省略参数。URL 通过 POST body 原样传入 `/new` 或 `/navigate`。
 
 > **v2.5.3 迁移提示**：若引用的站点经验文件（`references/site-patterns/*.md`）或其它脚本中仍含 `GET /new?url=...` 或 `/navigate?target=...&url=...` 的旧写法，调用会收到迁移指引。按 [`references/migration-2.5.3.md`](references/migration-2.5.3.md) 就地改写为 POST body 后再使用，并顺手把该站点经验文件更新掉。
+
+### 页面信息提取
+
+`/extract` 端点可一次性提取页面的完整结构化信息（标题、正文、链接、图片、视频、音频、时间、meta、JSON-LD），适合爬取场景。支持传 `target`（已打开的 tab）或 `url`（自动开 tab → 提取 → 关闭），自动滚动触发懒加载。详见 `references/cdp-api.md`。
+
+需要更精细控制时，仍可用 `/eval` 手写 JS 定向提取。
 
 ### 媒体资源提取
 
