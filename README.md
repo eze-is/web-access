@@ -37,7 +37,8 @@ AI Agent 原本的联网能力（WebSearch、WebFetch）缺少调度策略和浏
 |------|------|
 | 联网工具自动选择 | WebSearch / WebFetch / curl / Jina / CDP，按场景自主判断，可任意组合 |
 | CDP Proxy 浏览器操作 | 直连用户日常浏览器（Chrome / Edge / Chromium 系），天然携带登录态，支持动态页面、交互操作、视频截帧 |
-| 浏览器交互 | `/click`（JS click）、`/clickAt`（CDP 真实点击）、`/drag`（CDP 真实拖拽）、`/setFiles`（文件上传） |
+| 三种点击方式 | `/click`（JS click）、`/clickAt`（CDP 真实鼠标事件）、`/setFiles`（文件上传） |
+| 真实鼠标拖拽 | `/drag`（CDP 真实拖拽） |
 | 本地浏览器书签/历史检索 | `find-url.mjs` 跨 Chrome / Edge 查询公网搜不到的目标（内部系统）或用户访问过的页面，支持关键词/时间窗/访问频度排序 |
 | 并行分治 | 多目标时分发子 Agent 并行执行，共享一个 Proxy，tab 级隔离 |
 | 站点经验积累 | 按域名存储操作经验（URL 模式、平台特征、已知陷阱），跨 session 复用 |
@@ -180,12 +181,6 @@ curl -s "http://localhost:3456/health"                                      # �
 ```
 
 Proxy 会自动追踪通过 `/new` 创建的 tab，闲置 15 分钟后自动关闭，防止 Agent 异常退出时留下孤儿 tab。可通过环境变量 `CDP_TAB_IDLE_TIMEOUT`（单位毫秒）调整超时时间。
-
-拖拽集成测试会启动独立 Proxy 并操作本地测试页；用 `WEB_ACCESS_TEST_BROWSER` 指定已开启远程调试的浏览器：
-
-```bash
-WEB_ACCESS_TEST_BROWSER=chromium node --test tests/drag.test.mjs
-```
 
 ## ⚠️ 使用前提醒
 
