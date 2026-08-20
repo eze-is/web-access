@@ -38,6 +38,7 @@ AI Agent 原本的联网能力（WebSearch、WebFetch）缺少调度策略和浏
 | 联网工具自动选择 | WebSearch / WebFetch / curl / Jina / CDP，按场景自主判断，可任意组合 |
 | CDP Proxy 浏览器操作 | 直连用户日常浏览器（Chrome / Edge / Chromium 系），天然携带登录态，支持动态页面、交互操作、视频截帧 |
 | 三种点击方式 | `/click`（JS click）、`/clickAt`（CDP 真实鼠标事件）、`/setFiles`（文件上传） |
+| 真实鼠标拖拽 | `/drag`（CDP 真实拖拽） |
 | 本地浏览器书签/历史检索 | `find-url.mjs` 跨 Chrome / Edge 查询公网搜不到的目标（内部系统）或用户访问过的页面，支持关键词/时间窗/访问频度排序 |
 | 并行分治 | 多目标时分发子 Agent 并行执行，共享一个 Proxy，tab 级隔离 |
 | 站点经验积累 | 按域名存储操作经验（URL 模式、平台特征、已知陷阱），跨 session 复用 |
@@ -169,6 +170,8 @@ curl -s -X POST --data-raw 'https://example.com' http://localhost:3456/new  # �
 curl -s -X POST "http://localhost:3456/eval?target=ID" -d 'document.title'  # 执行 JS
 curl -s -X POST "http://localhost:3456/click?target=ID" -d 'button.submit'  # JS 点击
 curl -s -X POST "http://localhost:3456/clickAt?target=ID" -d '.upload-btn'  # 真实鼠标点击
+curl -s -X POST "http://localhost:3456/drag?target=ID" \
+  -d '{"source":".handle","deltaX":240,"deltaY":0}'                   # 真实鼠标拖拽
 curl -s -X POST "http://localhost:3456/setFiles?target=ID" \
   -d '{"selector":"input[type=file]","files":["/path/to/file.png"]}'        # 文件上传
 curl -s "http://localhost:3456/screenshot?target=ID&file=/tmp/shot.png"     # 截图
