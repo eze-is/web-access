@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
-import { selectBrowser, findFallbackPort } from './browser-discovery.mjs';
+import { classifyPortError, selectBrowser, findFallbackPort } from './browser-discovery.mjs';
 
 // --- 解析命令行 --browser 参数（本次启动用哪个浏览器）---
 function parseBrowserArg() {
@@ -55,6 +55,18 @@ let pinnedBrowserId = null;
 
 // --- 自动发现浏览器调试端口 ---
 // 决策完全委派给 browser-discovery.selectBrowser；此处只做日志和返回结构包装。
+function restrictedConnectionError(result) {
+  const blocked = result.browser ? [result.browser] : (result.restricted || []);
+  const endpoints = blocked.map((b) => {
+    const label = b.label || '本地调试端口';
+    return `${label} 127.0.0.1:${b.port} (${b.errorCode || 'permission denied'})`;
+  });
+  return new Error(
+    `当前执行环境无权访问 ${endpoints.join('、') || '浏览器本地调试端口'}。` +
+    `这不代表远程调试开关未启用。请在受限/沙箱环境外重新运行 check-deps.mjs，让 Proxy 也在非受限环境中启动。`
+  );
+}
+
 async function discoverChromePort() {
   const result = await selectBrowser(BROWSER_OVERRIDE);
   if (result.kind === 'ok') {
@@ -69,6 +81,9 @@ async function discoverChromePort() {
     const tag = result.source === 'override' ? '[--browser 指定]' : '[config.env 偏好]';
     console.log(`[CDP Proxy] 选用 ${result.browser.label} (端口 ${result.browser.port}${result.browser.wsPath ? '，带 wsPath' : ''}) ${tag}`);
     return { port: result.browser.port, wsPath: result.browser.wsPath };
+  }
+  if (result.kind === 'restricted') {
+    throw restrictedConnectionError(result);
   }
   // mismatch：有显式偏好但未检测到 —— 硬错，绝不降级
   if (result.kind === 'mismatch') {
@@ -90,11 +105,14 @@ async function discoverChromePort() {
     );
   }
   // 仅在「从未成功连接 + 无偏好/override」时允许固定端口兜底（手动 --remote-debugging-port 启动场景）
-  const fallbackPort = await findFallbackPort();
-  if (fallbackPort !== null) {
+  const fallback = await findFallbackPort();
+  if (fallback.kind === 'ok') {
     connectedBrowser = { id: 'unknown', label: '未知（通过手动调试端口连接）', source: 'fallback' };
-    console.log(`[CDP Proxy] 通过手动调试端口连接: ${fallbackPort}`);
-    return { port: fallbackPort, wsPath: null };
+    console.log(`[CDP Proxy] 通过手动调试端口连接: ${fallback.port}`);
+    return { port: fallback.port, wsPath: null };
+  }
+  if (fallback.kind === 'restricted') {
+    throw restrictedConnectionError(fallback);
   }
   return null;
 }
@@ -623,16 +641,23 @@ const server = http.createServer(async (req, res) => {
 function checkPortAvailable(port) {
   return new Promise((resolve) => {
     const s = net.createServer();
-    s.once('error', () => resolve(false));
-    s.once('listening', () => { s.close(); resolve(true); });
+    s.once('error', (error) => resolve({ available: false, errorCode: error?.code || null }));
+    s.once('listening', () => { s.close(); resolve({ available: true, errorCode: null }); });
     s.listen(port, '127.0.0.1');
   });
 }
 
 async function main() {
   // 检查是否已有 proxy 在运行
-  const available = await checkPortAvailable(PORT);
-  if (!available) {
+  const portProbe = await checkPortAvailable(PORT);
+  if (!portProbe.available) {
+    if (classifyPortError(portProbe.errorCode) === 'restricted') {
+      console.error(
+        `[CDP Proxy] 当前执行环境无权监听 127.0.0.1:${PORT} (${portProbe.errorCode})。` +
+        `请在受限/沙箱环境外重新运行 check-deps.mjs。`
+      );
+      process.exit(1);
+    }
     // 验证已有实例是否健康
     try {
       const ok = await new Promise((resolve) => {

@@ -50,12 +50,37 @@ export function knownBrowsers() {
 
 // TCP 端口监听检测
 // 用 TCP connect 而非 WebSocket，避免触发浏览器的远程调试授权弹窗。
+// EPERM / EACCES 表示当前执行环境不允许访问 localhost，不能据此判断浏览器未开启调试。
+export function classifyPortError(errorCode) {
+  return errorCode === 'EPERM' || errorCode === 'EACCES' ? 'restricted' : 'unreachable';
+}
+
 export function checkPort(port, host = '127.0.0.1', timeoutMs = 2000) {
   return new Promise((resolve) => {
-    const socket = net.createConnection(port, host);
-    const timer = setTimeout(() => { socket.destroy(); resolve(false); }, timeoutMs);
-    socket.once('connect', () => { clearTimeout(timer); socket.destroy(); resolve(true); });
-    socket.once('error',   () => { clearTimeout(timer); resolve(false); });
+    let socket;
+    let timer;
+    let settled = false;
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket?.destroy();
+      resolve(result);
+    };
+
+    try {
+      socket = net.createConnection(port, host);
+    } catch (error) {
+      finish({ status: classifyPortError(error?.code), errorCode: error?.code || null });
+      return;
+    }
+
+    timer = setTimeout(() => finish({ status: 'unreachable', errorCode: 'ETIMEDOUT' }), timeoutMs);
+    socket.once('connect', () => finish({ status: 'open', errorCode: null }));
+    socket.once('error', (error) => {
+      finish({ status: classifyPortError(error?.code), errorCode: error?.code || null });
+    });
   });
 }
 
@@ -78,9 +103,10 @@ function readConfig() {
   return cfg;
 }
 
-// 返回所有开了 toggle 且端口活的浏览器
+// 返回所有端口可达或被当前执行环境阻止探测的浏览器。
 async function detectAll() {
-  const result = [];
+  const detected = [];
+  const restricted = [];
   for (const browser of knownBrowsers()) {
     let content;
     try { content = fs.readFileSync(browser.devToolsPath, 'utf8'); }
@@ -88,51 +114,66 @@ async function detectAll() {
     const lines = content.trim().split(/\r?\n/).filter(Boolean);
     const port = parseInt(lines[0], 10);
     if (!(port > 0 && port < 65536)) continue;
-    if (!(await checkPort(port))) continue;
-    result.push({ ...browser, port, wsPath: lines[1] || null });
+    const candidate = { ...browser, port, wsPath: lines[1] || null };
+    const probe = await checkPort(port);
+    if (probe.status === 'open') detected.push(candidate);
+    else if (probe.status === 'restricted') restricted.push({ ...candidate, errorCode: probe.errorCode });
   }
-  return result;
+  return { detected, restricted };
 }
 
 // 决策入口
 // 参数：override — 调用方解析自命令行 --browser 的值（null 表示未传）
-// 返回 { kind, browser?, source?, detected, configured, override? }
-//   kind ∈ 'ok' | 'ambiguous' | 'mismatch' | 'empty'
+// 返回 { kind, browser?, source?, detected, restricted, configured, override? }
+//   kind ∈ 'ok' | 'ambiguous' | 'restricted' | 'mismatch' | 'empty'
 //   source ∈ 'override' | 'preference' | undefined
 //   ambiguous = 没设偏好 + 至少一个浏览器开了 toggle，需问用户
+//   restricted = 找到了调试端口文件，但当前环境无权连接 localhost
 //   mismatch  = override/配偏好设了但未检测到对应 toggle，硬错
 //   empty     = 0 浏览器开 toggle 且未设偏好/override
-export async function selectBrowser(override = null) {
-  const detected = await detectAll();
-  const configured = readConfig().WEB_ACCESS_BROWSER || null;
-
+export function resolveBrowserSelection({ detected, restricted, configured, override }) {
   // 1. 命令行 override（最高优先，单次有效）
   if (override) {
     const match = detected.find(b => b.id === override);
-    if (match) return { kind: 'ok', browser: match, source: 'override', detected, configured, override };
-    return { kind: 'mismatch', source: 'override', detected, configured, override };
+    if (match) return { kind: 'ok', browser: match, source: 'override', detected, restricted, configured, override };
+    const blocked = restricted.find(b => b.id === override);
+    if (blocked) return { kind: 'restricted', browser: blocked, source: 'override', detected, restricted, configured, override };
+    return { kind: 'mismatch', source: 'override', detected, restricted, configured, override };
   }
 
   // 2. config.env preference（持久）
   if (configured) {
     const match = detected.find(b => b.id === configured);
-    if (match) return { kind: 'ok', browser: match, source: 'preference', detected, configured };
-    return { kind: 'mismatch', source: 'preference', detected, configured };
+    if (match) return { kind: 'ok', browser: match, source: 'preference', detected, restricted, configured };
+    const blocked = restricted.find(b => b.id === configured);
+    if (blocked) return { kind: 'restricted', browser: blocked, source: 'preference', detected, restricted, configured };
+    return { kind: 'mismatch', source: 'preference', detected, restricted, configured };
   }
 
   // 3. 无偏好 —— 一律询问用户（哪怕 detected 只有一个）
   if (detected.length === 0) {
-    return { kind: 'empty', detected, configured };
+    if (restricted.length) return { kind: 'restricted', detected, restricted, configured };
+    return { kind: 'empty', detected, restricted, configured };
   }
-  return { kind: 'ambiguous', detected, configured };
+  return { kind: 'ambiguous', detected, restricted, configured };
+}
+
+export async function selectBrowser(override = null) {
+  const { detected, restricted } = await detectAll();
+  const configured = readConfig().WEB_ACCESS_BROWSER || null;
+  return resolveBrowserSelection({ detected, restricted, configured, override });
 }
 
 // 兜底：扫描常用固定端口
 // 适用场景：用户手动 --remote-debugging-port=9222 启动浏览器，
 // 此时 DevToolsActivePort 可能不在默认 user-data-dir。
 export async function findFallbackPort() {
+  const restricted = [];
   for (const port of [9222, 9229, 9333]) {
-    if (await checkPort(port)) return port;
+    const probe = await checkPort(port);
+    if (probe.status === 'open') return { kind: 'ok', port };
+    if (probe.status === 'restricted') restricted.push({ port, errorCode: probe.errorCode });
   }
-  return null;
+  if (restricted.length) return { kind: 'restricted', restricted };
+  return { kind: 'empty' };
 }

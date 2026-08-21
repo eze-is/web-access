@@ -130,6 +130,19 @@ function printAvailableHint(detected) {
   }
 }
 
+function printRestrictedHint(result) {
+  const blocked = result.browser ? [result.browser] : (result.restricted || []);
+  const endpoints = blocked.map((b) => {
+    const label = b.label || '本地调试端口';
+    return `${label} 127.0.0.1:${b.port} (${b.errorCode || 'permission denied'})`;
+  });
+  console.log(`browser: restricted — 当前执行环境无权访问 ${endpoints.join('、') || '浏览器本地调试端口'}`);
+  console.log('  这不代表浏览器未启动，也不代表远程调试开关未启用。');
+  console.log('  Agent 处理顺序：');
+  console.log('    1. 在受限/沙箱环境外重新运行同一条 node check-deps.mjs 命令，让 Proxy 也在非受限环境中启动');
+  console.log('    2. 只有非受限重跑仍失败时，才让用户检查浏览器的远程调试开关');
+}
+
 async function resolveAndReport(override) {
   const result = await selectBrowser(override);
 
@@ -146,6 +159,11 @@ async function resolveAndReport(override) {
       console.log('  请询问用户：哪个浏览器作为 Agent 的默认？（写入 config.env 的 WEB_ACCESS_BROWSER）');
       console.log('  若仅本次使用，可重跑：node check-deps.mjs --browser <id>');
       return { proceed: false, exitCode: 2 };
+    }
+
+    case 'restricted': {
+      printRestrictedHint(result);
+      return { proceed: false, exitCode: 1 };
     }
 
     case 'mismatch': {
@@ -165,10 +183,14 @@ async function resolveAndReport(override) {
 
     case 'empty': {
       // 末路兜底：尝试常见固定端口（用户手动 --remote-debugging-port=9222 启动的场景）
-      const fallbackPort = await findFallbackPort();
-      if (fallbackPort) {
-        console.log(`browser: ok (port ${fallbackPort}) [通过手动调试端口连接]`);
+      const fallback = await findFallbackPort();
+      if (fallback.kind === 'ok') {
+        console.log(`browser: ok (port ${fallback.port}) [通过手动调试端口连接]`);
         return { proceed: true };
+      }
+      if (fallback.kind === 'restricted') {
+        printRestrictedHint(fallback);
+        return { proceed: false, exitCode: 1 };
       }
       console.log('browser: 未连接 — 没有任何浏览器打开远程调试开关');
       console.log(`  支持的浏览器：${knownBrowsers().map(b => b.label).join('、')}`);

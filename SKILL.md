@@ -16,6 +16,8 @@ metadata:
 
 在开始联网操作前，先检查 CDP 模式可用性：
 
+**Codex / 沙箱宿主**：在 Codex 等会限制本地回环连接的宿主中，首次运行 `check-deps.mjs` 就必须申请在受限/沙箱环境外执行（例如 Codex 的 `sandbox_permissions: require_escalated`），因为该脚本还会启动持续运行的 Proxy，子进程会继承当前执行限制。不要先在默认沙箱内试跑；也不要在完成一次非受限检查前告诉用户远程调试开关未启用。
+
 ```bash
 node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 ```
@@ -25,7 +27,7 @@ node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 按脚本输出处理：
 - `exit 0` → 继续
 - `exit 2` → 需询问用户偏好，写入 `${CLAUDE_SKILL_DIR}/config.env` 的 `WEB_ACCESS_BROWSER`
-- `exit 1` → 按 stdout 错误信息处理。若提示包含「Agent 处理顺序」，按其步骤执行（如先用系统命令打开浏览器后重跑），自动可解则不打扰用户；仍失败再向用户求助
+- `exit 1` → 按 stdout 错误信息处理。若提示当前执行环境 `restricted` 或出现 `EPERM` / `EACCES`，这不代表浏览器未开启调试；应在受限/沙箱环境外重新运行同一条 `check-deps.mjs` 命令，让 Proxy 也在非受限环境中启动。其他错误若包含「Agent 处理顺序」，按其步骤执行；自动可解则不打扰用户，仍失败再向用户求助
 
 支持参数 `--browser <chrome|edge>` 表达本次临时覆盖（不写 config.env）。
 
