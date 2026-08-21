@@ -409,7 +409,14 @@ const server = http.createServer(async (req, res) => {
       // 等待页面加载完成
       await waitForLoad(sid);
 
-      res.end(JSON.stringify(resp.result));
+      // 显式透出导航错误：浏览器重启导致僵尸会话时 Page.navigate 会返回 {error}（无 result），
+      // 直接 JSON.stringify(resp.result) 会写出空 body，调用方无从判断。这里把错误透出来。
+      if (resp.error) {
+        res.statusCode = 502;
+        res.end(JSON.stringify({ error: 'Page.navigate failed', cdp: resp.error }));
+        return;
+      }
+      res.end(JSON.stringify(resp.result ?? { error: 'empty navigation result' }));
     }
 
     // GET /back?target=xxx - 后退

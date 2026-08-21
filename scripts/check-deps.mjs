@@ -8,7 +8,7 @@
 // 持久偏好 → config.env (skill 根目录, gitignored)
 // 单次覆盖 → --browser 命令行参数（全链路 argv，不碰 process.env）
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -75,9 +75,27 @@ function startProxyDetached(browserOverride) {
   fs.closeSync(logFd);
 }
 
+// 功能性探针：health/targets 正常不等于会话可用。浏览器若在 proxy 运行期间重启过，
+// 旧 proxy 的会话会失效——所有 Page.navigate 静默失败、tab 卡在 about:blank，但 /health 仍报 ok。
+// 建一个 about:blank 测试 tab → eval → close，全过才算真健康。
+async function functionalProbe(baseUrl) {
+  try {
+    const newRes = await fetch(`${baseUrl}/new`, { method: 'POST', body: 'about:blank', signal: AbortSignal.timeout(5000) });
+    const { targetId } = await newRes.json();
+    if (!targetId) return false;
+    const evalRes = await fetch(`${baseUrl}/eval?target=${targetId}`, { method: 'POST', body: '1+1', signal: AbortSignal.timeout(5000) });
+    const evalJson = await evalRes.json();
+    await fetch(`${baseUrl}/close?target=${targetId}`, { signal: AbortSignal.timeout(5000) }).catch(() => {});
+    return evalJson?.value === 2;
+  } catch {
+    return false;
+  }
+}
+
 async function ensureProxy(expectedBrowserId, browserOverride) {
-  const healthUrl = `http://127.0.0.1:${PROXY_PORT}/health`;
-  const targetsUrl = `http://127.0.0.1:${PROXY_PORT}/targets`;
+  const baseUrl = `http://127.0.0.1:${PROXY_PORT}`;
+  const healthUrl = `${baseUrl}/health`;
+  const targetsUrl = `${baseUrl}/targets`;
 
   // 复用：proxy 已运行 + 已连接浏览器 → 校验 expected vs actual
   const health = await httpGetJson(healthUrl);
@@ -89,8 +107,17 @@ async function ensureProxy(expectedBrowserId, browserOverride) {
       console.log('  请在终端运行 pkill -f cdp-proxy.mjs 重置后再试');
       return false;
     }
-    console.log(`proxy: ready (${runningLabel})`);
-    return true;
+    // 健康但未必能用：实测一遍 new/eval/close 是否真的工作；失败则判定为僵尸 proxy
+    // （浏览器重启后遗留的旧进程，会话失效），杀掉后走下方重启分支。
+    const probeOk = await functionalProbe(baseUrl);
+    if (probeOk) {
+      console.log(`proxy: ready (${runningLabel})`);
+      return true;
+    }
+    console.log(`proxy: stale — 健康检查通过但功能性探针失败（浏览器可能已重启），杀掉旧 proxy 重启...`);
+    try { spawnSync('pkill', ['-f', 'cdp-proxy.mjs']); } catch {}
+    await new Promise((r) => setTimeout(r, 1500));
+    // 落入下方 startProxyDetached 重启分支
   }
 
   console.log('proxy: connecting...');
