@@ -13,11 +13,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { selectBrowser, knownBrowsers, findFallbackPort } from './browser-discovery.mjs';
+import { selectBrowser, knownBrowsers, findFallbackPort, readConfig } from './browser-discovery.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PROXY_SCRIPT = path.join(ROOT, 'scripts', 'cdp-proxy.mjs');
-const PROXY_PORT = Number(process.env.CDP_PROXY_PORT || 3456);
+const PROXY_PORT = Number(process.env.CDP_PROXY_PORT || readConfig().CDP_PROXY_PORT || 3456);
 const CONFIG_PATH = path.join(ROOT, 'config.env');
 const CONFIG_TEMPLATE = path.join(ROOT, 'templates', 'config.env.template');
 
@@ -42,6 +42,27 @@ function ensureConfigExists() {
   } catch {
     // 模板不存在或拷贝失败 —— 不阻塞，readConfig 会兜底
   }
+}
+
+function normalizeProxyBase(raw) {
+  if (!raw) return null;
+  const value = raw.trim().replace(/\/+$/, '');
+  if (!value) return null;
+  return /^https?:\/\//i.test(value) ? value : `http://${value}`;
+}
+
+async function ensureRemoteProxy(proxyBase) {
+  const health = await httpGetJson(`${proxyBase}/health`, 5000);
+  if (health?.status !== 'ok') {
+    console.log(`proxy: remote unavailable — ${proxyBase}`);
+    console.log('  请确认有浏览器的机器已启动 cdp-proxy，且防火墙允许 3456 端口局域网访问');
+    return false;
+  }
+  const connected = health.connected ? 'connected' : 'not connected';
+  const browser = health.browser?.label || health.browser?.id || 'unknown';
+  console.log(`proxy: remote ready (${proxyBase}, ${connected}, browser: ${browser})`);
+  console.log(`  无浏览器机器后续调用请使用：${proxyBase}/targets、${proxyBase}/new 等 API`);
+  return true;
 }
 
 // --- Node.js 版本检查 ---
@@ -184,6 +205,13 @@ async function main() {
   const opts = parseArgs(process.argv.slice(2));
   ensureConfigExists();
   checkNode();
+
+  const proxyBase = normalizeProxyBase(process.env.CDP_PROXY_BASE_URL || readConfig().CDP_PROXY_BASE_URL);
+  if (proxyBase) {
+    const proxyOk = await ensureRemoteProxy(proxyBase);
+    if (!proxyOk) process.exit(1);
+    return;
+  }
 
   const { proceed, exitCode, browserId } = await resolveAndReport(opts.browser);
   if (!proceed) process.exit(exitCode);

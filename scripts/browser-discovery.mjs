@@ -61,7 +61,7 @@ export function checkPort(port, host = '127.0.0.1', timeoutMs = 2000) {
 
 // 读 config.env 文件（不写入 process.env，分清来源）
 // 格式：KEY=VALUE，# 开头是注释
-function readConfig() {
+export function readConfig() {
   const cfg = {};
   let content;
   try { content = fs.readFileSync(CONFIG_PATH, 'utf8'); }

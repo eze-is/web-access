@@ -117,45 +117,59 @@ node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 
 脚本会依次检查 Node.js、浏览器调试端口，并确保 Proxy 已连接（未运行则自动启动并等待）。Proxy 启动后持续运行。
 
+### 局域网 / 无浏览器机器访问
+
+CDP Proxy 默认监听 `0.0.0.0:3456`，有浏览器的机器启动后，局域网其他机器可以通过 `http://<有浏览器机器的局域网IP>:3456` 调用同一套 Web Access API。若需要只允许本机访问，把 `${CLAUDE_SKILL_DIR}/config.env` 中的 `CDP_PROXY_HOST` 改为 `127.0.0.1` 后重启 proxy。
+
+无浏览器机器不需要本机安装/启动浏览器，在自己的 `${CLAUDE_SKILL_DIR}/config.env` 配置：
+
+```bash
+CDP_PROXY_BASE_URL=http://<有浏览器机器的局域网IP>:3456
+```
+
+配置后运行 `node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"` 会只校验远端 Proxy 的 `/health`，不再尝试发现本机浏览器。后续调用 API 时用这个远端 base URL 替代 `http://localhost:3456`。
+
+> 安全提示：CDP Proxy 是浏览器控制 API，当前没有鉴权。只建议暴露在可信局域网 / VPN 内，并通过系统防火墙限制来源 IP；不要直接暴露到公网。
+
 ### Proxy API
 
-所有操作通过 curl 调用 HTTP API：
+所有操作通过 curl 调用 HTTP API。默认本机 base URL 为 `http://localhost:3456`；无浏览器机器或远程调用时，用 `CDP_PROXY_BASE_URL`（如 `http://192.168.1.10:3456`）替代：
 
 ```bash
 # 列出用户已打开的 tab
-curl -s http://localhost:3456/targets
+curl -s ${CDP_PROXY_BASE_URL:-http://localhost:3456}/targets
 
 # 创建新后台 tab（自动等待加载）— URL 走 POST body，避免目标 URL 含 query 时被切分
-curl -s -X POST --data-raw 'https://example.com' http://localhost:3456/new
+curl -s -X POST --data-raw 'https://example.com' ${CDP_PROXY_BASE_URL:-http://localhost:3456}/new
 
 # 页面信息
-curl -s "http://localhost:3456/info?target=ID"
+curl -s "${CDP_PROXY_BASE_URL:-http://localhost:3456}/info?target=ID"
 
 # 执行任意 JS：可读写 DOM、提取数据、操控元素、触发状态变更、提交表单、调用内部方法
-curl -s -X POST "http://localhost:3456/eval?target=ID" -d 'document.title'
+curl -s -X POST "${CDP_PROXY_BASE_URL:-http://localhost:3456}/eval?target=ID" -d 'document.title'
 
 # 捕获页面渲染状态（含视频当前帧）
-curl -s "http://localhost:3456/screenshot?target=ID&file=/tmp/shot.png"
+curl -s "${CDP_PROXY_BASE_URL:-http://localhost:3456}/screenshot?target=ID&file=/tmp/shot.png"
 
 # 导航（URL 走 POST body，target 走 query）、后退
-curl -s -X POST --data-raw 'https://example.com' "http://localhost:3456/navigate?target=ID"
-curl -s "http://localhost:3456/back?target=ID"
+curl -s -X POST --data-raw 'https://example.com' "${CDP_PROXY_BASE_URL:-http://localhost:3456}/navigate?target=ID"
+curl -s "${CDP_PROXY_BASE_URL:-http://localhost:3456}/back?target=ID"
 
 # 点击（POST body 为 CSS 选择器）— JS el.click()，简单快速，覆盖大多数场景
-curl -s -X POST "http://localhost:3456/click?target=ID" -d 'button.submit'
+curl -s -X POST "${CDP_PROXY_BASE_URL:-http://localhost:3456}/click?target=ID" -d 'button.submit'
 
 # 真实鼠标点击 — CDP Input.dispatchMouseEvent，算用户手势，能触发文件对话框
-curl -s -X POST "http://localhost:3456/clickAt?target=ID" -d 'button.upload'
+curl -s -X POST "${CDP_PROXY_BASE_URL:-http://localhost:3456}/clickAt?target=ID" -d 'button.upload'
 
 # 文件上传 — 直接设置 file input 的本地文件路径，绕过文件对话框
-curl -s -X POST "http://localhost:3456/setFiles?target=ID" -d '{"selector":"input[type=file]","files":["/path/to/file.png"]}'
+curl -s -X POST "${CDP_PROXY_BASE_URL:-http://localhost:3456}/setFiles?target=ID" -d '{"selector":"input[type=file]","files":["/path/to/file.png"]}'
 
 # 滚动（触发懒加载）
-curl -s "http://localhost:3456/scroll?target=ID&y=3000"
-curl -s "http://localhost:3456/scroll?target=ID&direction=bottom"
+curl -s "${CDP_PROXY_BASE_URL:-http://localhost:3456}/scroll?target=ID&y=3000"
+curl -s "${CDP_PROXY_BASE_URL:-http://localhost:3456}/scroll?target=ID&direction=bottom"
 
 # 关闭 tab
-curl -s "http://localhost:3456/close?target=ID"
+curl -s "${CDP_PROXY_BASE_URL:-http://localhost:3456}/close?target=ID"
 ```
 
 ### 页面内导航
