@@ -130,9 +130,20 @@ export async function selectBrowser(override = null) {
 // 兜底：扫描常用固定端口
 // 适用场景：用户手动 --remote-debugging-port=9222 启动浏览器，
 // 此时 DevToolsActivePort 可能不在默认 user-data-dir。
+// 返回 { port, wsPath } 或 null（需 fetch wsPath 因为 Chrome 要求完整 UUID 路径）
 export async function findFallbackPort() {
   for (const port of [9222, 9229, 9333]) {
-    if (await checkPort(port)) return port;
+    if (!(await checkPort(port))) continue;
+    try {
+      const resp = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(3000) });
+      const data = await resp.json();
+      const wsUrl = data.webSocketDebuggerUrl;
+      if (wsUrl) {
+        const u = new URL(wsUrl);
+        return { port, wsPath: u.pathname };
+      }
+    } catch {}
+    return { port, wsPath: null };
   }
   return null;
 }

@@ -165,9 +165,9 @@ async function resolveAndReport(override) {
 
     case 'empty': {
       // 末路兜底：尝试常见固定端口（用户手动 --remote-debugging-port=9222 启动的场景）
-      const fallbackPort = await findFallbackPort();
-      if (fallbackPort) {
-        console.log(`browser: ok (port ${fallbackPort}) [通过手动调试端口连接]`);
+      const fallback = await findFallbackPort();
+      if (fallback) {
+        console.log(`browser: ok (port ${fallback.port}) [通过手动调试端口连接]`);
         return { proceed: true };
       }
       console.log('browser: 未连接 — 没有任何浏览器打开远程调试开关');

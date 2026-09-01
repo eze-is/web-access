@@ -90,11 +90,11 @@ async function discoverChromePort() {
     );
   }
   // 仅在「从未成功连接 + 无偏好/override」时允许固定端口兜底（手动 --remote-debugging-port 启动场景）
-  const fallbackPort = await findFallbackPort();
-  if (fallbackPort !== null) {
+  const fallback = await findFallbackPort();
+  if (fallback !== null) {
     connectedBrowser = { id: 'unknown', label: '未知（通过手动调试端口连接）', source: 'fallback' };
-    console.log(`[CDP Proxy] 通过手动调试端口连接: ${fallbackPort}`);
-    return { port: fallbackPort, wsPath: null };
+    console.log(`[CDP Proxy] 通过手动调试端口连接: ${fallback.port}${fallback.wsPath ? '，带 wsPath' : ''}`);
+    return { port: fallback.port, wsPath: fallback.wsPath };
   }
   return null;
 }
