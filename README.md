@@ -212,3 +212,7 @@ MIT · 作者：[一泽 Eze](https://github.com/eze-is) · [官网](https://web-
 [![Download History](https://skill-history.com/chart/eze-is/web-access.svg)](https://skill-history.com/eze-is/web-access)
 
 <img width="1280" height="306" alt="image" src="https://github.com/user-attachments/assets/2afa25c2-3730-413e-b40f-94e52567249d" />
+
+## 回归测试
+
+运行 `node --test tests/proxy.test.mjs`（Node.js 22+）。测试在临时浏览器目录与本地端口中模拟握手关闭，验证后续并发请求仅建立一次重连；不访问真实浏览器资料，也不需要浏览器授权。

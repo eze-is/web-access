@@ -112,7 +112,11 @@ let connectingPromise = null;
 async function connect() {
   if (ws && (ws.readyState === WS.OPEN || ws.readyState === 1)) return;
   if (connectingPromise) return connectingPromise;  // 复用进行中的连接
+  connectingPromise = openConnection().finally(() => { connectingPromise = null; });
+  return connectingPromise;
+}
 
+async function openConnection() {
   if (!chromePort) {
     const discovered = await discoverChromePort();
     if (!discovered) {
@@ -130,18 +134,18 @@ async function connect() {
   const wsUrl = getWebSocketUrl(chromePort, chromeWsPath);
   if (!wsUrl) throw new Error('无法获取 Chrome WebSocket URL');
 
-  return connectingPromise = new Promise((resolve, reject) => {
-    ws = new WS(wsUrl);
+  return new Promise((resolve, reject) => {
+    const socket = new WS(wsUrl);
+    ws = socket;
 
     const onOpen = () => {
       cleanup();
-      connectingPromise = null;
       console.log(`[CDP Proxy] 已连接浏览器 (端口 ${chromePort})`);
       resolve();
     };
     const onError = (e) => {
       cleanup();
-      connectingPromise = null;
+      if (ws !== socket) return;
       ws = null;
       chromePort = null;
       chromeWsPath = null;
@@ -150,12 +154,16 @@ async function connect() {
       reject(new Error(msg));
     };
     const onClose = () => {
+      cleanup();
+      reject(new Error('Browser closed the debugging connection before it was ready; retry after allowing remote debugging'));
+      if (ws !== socket) return;
       console.log('[CDP Proxy] 连接断开');
       ws = null;
       chromePort = null; // 重置端口缓存，下次连接重新发现
       chromeWsPath = null;
       sessions.clear();
       managedTabs.clear();
+      portGuardedSessions.clear();
     };
     const onMessage = (evt) => {
       const data = typeof evt === 'string' ? evt : (evt.data || evt);
@@ -179,21 +187,21 @@ async function connect() {
     };
 
     function cleanup() {
-      ws.removeEventListener?.('open', onOpen);
-      ws.removeEventListener?.('error', onError);
+      socket.removeEventListener?.('open', onOpen);
+      socket.removeEventListener?.('error', onError);
     }
 
     // 兼容 Node 原生 WebSocket 和 ws 模块的事件 API
-    if (ws.on) {
-      ws.on('open', onOpen);
-      ws.on('error', onError);
-      ws.on('close', onClose);
-      ws.on('message', onMessage);
+    if (socket.on) {
+      socket.on('open', onOpen);
+      socket.on('error', onError);
+      socket.on('close', onClose);
+      socket.on('message', onMessage);
     } else {
-      ws.addEventListener('open', onOpen);
-      ws.addEventListener('error', onError);
-      ws.addEventListener('close', onClose);
-      ws.addEventListener('message', onMessage);
+      socket.addEventListener('open', onOpen);
+      socket.addEventListener('error', onError);
+      socket.addEventListener('close', onClose);
+      socket.addEventListener('message', onMessage);
     }
   });
 }
