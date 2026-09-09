@@ -216,3 +216,5 @@ MIT · 作者：[一泽 Eze](https://github.com/eze-is) · [官网](https://web-
 ## 回归测试
 
 运行 `node --test tests/proxy.test.mjs`（Node.js 22+）。测试在临时浏览器目录与本地端口中模拟握手关闭，验证后续并发请求仅建立一次重连；不访问真实浏览器资料，也不需要浏览器授权。
+
+测试使用直接的 `node:http` 请求，避免 macOS 上部分 Node 24 内置 fetch/Undici 在 socket QoS 设置时抛出 `setTypeOfService EINVAL`；并发与重连断言保持不变。
