@@ -12,9 +12,11 @@ metadata:
 
 # web-access Skill
 
-## 前置检查
+## 前置检查（仅 CDP 模式）
 
-在开始联网操作前，先检查 CDP 模式可用性：
+先根据任务需求选择联网工具。使用 WebSearch、WebFetch、curl 或 Jina 等非 CDP 工具时，无需运行浏览器前置检查，也无需启动 CDP Proxy。
+
+仅在确定需要使用浏览器 CDP 时，执行以下检查；需要登录态或网页交互的任务可直接进入此步骤，无需先尝试其他工具：
 
 ```bash
 node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
