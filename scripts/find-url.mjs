@@ -66,6 +66,30 @@ function printUsage() { console.error(fs.readFileSync(new URL(import.meta.url)).
 function knownBrowserDataDirs() {
   const home = os.homedir();
   const localAppData = process.env.LOCALAPPDATA || '';
+  const isWSL2 = os.platform() === 'linux' && fs.existsSync('/mnt/c/Users');
+
+  if (isWSL2) {
+    // WSL2: 扫描 /mnt/c/Users/*/AppData/Local/ 下的浏览器数据
+    const results = [];
+    try {
+      const users = fs.readdirSync('/mnt/c/Users').filter(u =>
+        !u.startsWith('.') && !['All Users', 'Default', 'Default User', 'Public', 'desktop.ini'].includes(u)
+      );
+      for (const user of users) {
+        const base = `/mnt/c/Users/${user}/AppData/Local`;
+        const candidates = [
+          { id: 'chrome', label: `Chrome (${user})`, dir: `${base}/Google/Chrome/User Data` },
+          { id: 'edge',   label: `Edge (${user})`,   dir: `${base}/Microsoft/Edge/User Data` },
+        ];
+        for (const c of candidates) {
+          if (fs.existsSync(c.dir)) results.push(c);
+        }
+      }
+    } catch { /* 权限不足等情况静默跳过 */ }
+    if (results.length) return results;
+    // 回退到标准 Linux 路径
+  }
+
   switch (os.platform()) {
     case 'darwin':
       return [
