@@ -21,6 +21,10 @@ async function fixture(t, { platform = 'darwin', config = '', envPreference = ''
   const configPath = path.join(root, 'config.env');
   if (config !== null) await fs.writeFile(configPath, config);
   await fs.copyFile(path.join(SCRIPTS, 'browser-discovery.mjs'), path.join(scripts, 'browser-discovery.mjs'));
+  // 通用扫描在各平台读取的浏览器用户数据目录根
+  const platformRoot = platform === 'win32' ? localAppData
+    : platform === 'linux' ? path.join(home, '.config')
+    : path.join(home, 'Library', 'Application Support');
   const probe = path.join(root, 'probe.mjs');
   await fs.writeFile(probe, `
 import net from 'node:net';
@@ -61,6 +65,8 @@ if (opts.action === 'windowsPaths') {
   result = discovery.getConfiguredBrowserId();
 } else if (opts.action === 'checkPort') {
   result = await discovery.checkPort(opts.port, '127.0.0.1', 100);
+} else if (opts.action === 'scan') {
+  result = discovery.scanDevToolsActivePort();
 } else {
   result = await discovery.selectBrowser(opts.override ?? null);
 }
@@ -88,7 +94,7 @@ console.log(JSON.stringify({ result, connections, ...(opts.recordReads ? { reads
     } finally { clearTimeout(watchdog); }
   };
   return {
-    root, home, localAppData, configPath, run,
+    root, home, localAppData, configPath, platformRoot, run,
     async devTools(id, content) {
       const { result: browsers } = await run('known');
       const browser = browsers.find(item => item.id === id);
@@ -96,6 +102,14 @@ console.log(JSON.stringify({ result, connections, ...(opts.recordReads ? { reads
       await fs.mkdir(path.dirname(browser.devToolsPath), { recursive: true });
       await fs.writeFile(browser.devToolsPath, content);
       return browser;
+    },
+    // 在平台扫描根下按相对路径写白名单外浏览器的端口文件，
+    // rel 如 'Dia/User Data/DevToolsActivePort'
+    async portFile(rel, content) {
+      const target = path.join(platformRoot, rel);
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.writeFile(target, content);
+      return target;
     },
   };
 }
@@ -421,3 +435,231 @@ test('显式 Chrome 端口成功时仍保留另一个浏览器不可读的事实
   assert.equal(result.browser.id, 'chrome');
   assert.deepEqual(result.inaccessible, [{ ...edge, code: 'EACCES' }]);
 });
+
+// --- 通用扫描（DevToolsActivePort 兜底）与发现模式 ---
+
+// 各平台扫描根下的典型目录层级 → 推断 id/label（覆盖 vendor、vendor/User Data、
+// vendor/product、vendor/product/User Data 四种形态）
+const scanCases = {
+  darwin: [
+    { rel: 'Vivaldi/DevToolsActivePort', id: 'vivaldi', label: 'Vivaldi' },
+    { rel: 'Dia/User Data/DevToolsActivePort', id: 'dia', label: 'Dia' },
+    { rel: 'BraveSoftware/Brave-Browser/DevToolsActivePort', id: 'bravesoftware-brave-browser', label: 'BraveSoftware Brave-Browser' },
+  ],
+  linux: [
+    { rel: 'vivaldi/DevToolsActivePort', id: 'vivaldi', label: 'vivaldi' },
+    { rel: 'dia/User Data/DevToolsActivePort', id: 'dia', label: 'dia' },
+    { rel: 'BraveSoftware/Brave-Browser/DevToolsActivePort', id: 'bravesoftware-brave-browser', label: 'BraveSoftware Brave-Browser' },
+  ],
+  win32: [
+    { rel: 'Vivaldi/User Data/DevToolsActivePort', id: 'vivaldi', label: 'Vivaldi' },
+    { rel: 'Dia/User Data/DevToolsActivePort', id: 'dia', label: 'Dia' },
+    { rel: 'BraveSoftware/Brave-Browser/DevToolsActivePort', id: 'bravesoftware-brave-browser', label: 'BraveSoftware Brave-Browser' },
+    { rel: 'Google/Chrome/User Data/DevToolsActivePort', id: 'google-chrome', label: 'Google Chrome' },
+  ],
+};
+
+for (const platform of ['darwin', 'linux', 'win32']) {
+  test(`${platform} 通用扫描覆盖各目录层级，id/label 由路径推断，不发 TCP`, async t => {
+    const f = await fixture(t, { platform });
+    for (const spec of scanCases[platform]) {
+      await f.portFile(spec.rel, '12345\n/devtools/browser/fake\n');
+    }
+    const { result: browsers, connections } = await f.run('scan', { rejectTcp: true });
+    // 扫描顺序来自目录遍历，不构成语义契约——按集合比较
+    assert.deepEqual(browsers.map(browser => browser.id).sort(), scanCases[platform].map(spec => spec.id).sort());
+    for (const browser of browsers) {
+      const spec = scanCases[platform].find(item => item.id === browser.id);
+      assert.equal(browser.devToolsPath, path.join(f.platformRoot, spec.rel));
+      assert.equal(browser.label, spec.label);
+    }
+    assert.equal(connections, 0);
+  });
+}
+
+test('扫描忽略无端口文件的目录，同 id 去重保留第一份', async t => {
+  const f = await fixture(t);
+  await f.portFile('JetBrains/Settings/other.json', '{}');
+  await f.portFile('SomeBrowser/DevToolsActivePort', '1111\n/a\n');
+  await f.portFile('SomeBrowser/User Data/DevToolsActivePort', '2222\n/b\n');
+  const { result: browsers, connections } = await f.run('scan', { rejectTcp: true });
+  assert.equal(browsers.length, 1);
+  assert.equal(browsers[0].id, 'somebrowser');
+  assert.equal(browsers[0].devToolsPath, path.join(f.platformRoot, 'SomeBrowser/DevToolsActivePort'));
+  assert.equal(connections, 0);
+});
+
+test('目录存在但无 DevToolsActivePort 文件时扫描安静返回未发现', async t => {
+  const f = await fixture(t);
+  await fs.mkdir(path.join(f.platformRoot, 'Dia', 'User Data'), { recursive: true });
+  await fs.mkdir(path.join(f.platformRoot, 'Google', 'Chrome'), { recursive: true });
+  assert.deepEqual(await f.run('scan', { rejectTcp: true }), { result: [], connections: 0 });
+  assert.deepEqual(await f.run('select', { rejectTcp: true }), {
+    result: { kind: 'empty', detected: [], configured: null, inaccessible: [] }, connections: 0,
+  });
+});
+
+test('auto 模式白名单优先：白名单命中保持原条目，扫描只补白名单外浏览器', async t => {
+  const f = await fixture(t);
+  const server = await fakeHttp(t);
+  const chrome = await f.devTools('chrome', `${server.port}\n/chrome\n`);
+  const diaPath = await f.portFile('Dia/User Data/DevToolsActivePort', `${server.port}\n/dia\n`);
+  const { result, connections } = await f.run();
+  assert.equal(result.kind, 'ambiguous');
+  assert.deepEqual(result.detected.map(browser => browser.id), ['chrome', 'dia']);
+  const chromeDetected = result.detected.find(browser => browser.id === 'chrome');
+  assert.equal(chromeDetected.label, 'Chrome');
+  assert.equal(chromeDetected.devToolsPath, chrome.devToolsPath);
+  const dia = result.detected.find(browser => browser.id === 'dia');
+  assert.equal(dia.label, 'Dia');
+  assert.equal(dia.devToolsPath, diaPath);
+  assert.equal(dia.port, server.port);
+  assert.equal(dia.wsPath, '/dia');
+  assert.equal(connections, 2);
+  assert.equal(server.requests(), 0);
+});
+
+test('auto 模式扫描不重复白名单已覆盖的浏览器', async t => {
+  const f = await fixture(t, { config: 'WEB_ACCESS_BROWSER=chrome\n' });
+  const server = await fakeHttp(t);
+  await f.devTools('chrome', `${server.port}\n/chrome\n`);
+  const { result, connections } = await f.run();
+  assert.equal(result.kind, 'ok');
+  assert.deepEqual(result.detected.map(browser => browser.id), ['chrome']);
+  assert.equal(result.detected[0].label, 'Chrome');
+  assert.equal(connections, 1);
+});
+
+test('auto 模式白名单未命中时由扫描兜底，偏好可指向扫描发现的浏览器', async t => {
+  const f = await fixture(t, { config: 'WEB_ACCESS_BROWSER=dia\n' });
+  const server = await fakeHttp(t);
+  await f.portFile('Dia/User Data/DevToolsActivePort', `${server.port}\r\n/devtools/browser/fake-dia\r\n`);
+  const { result, connections } = await f.run();
+  assert.equal(result.kind, 'ok');
+  assert.equal(result.source, 'preference');
+  assert.equal(result.browser.id, 'dia');
+  assert.equal(result.browser.label, 'Dia');
+  assert.equal(result.browser.port, server.port);
+  assert.equal(result.browser.wsPath, '/devtools/browser/fake-dia');
+  assert.equal(connections, 1);
+  assert.equal(server.requests(), 0);
+});
+
+test('auto 模式 override 可指定扫描发现的浏览器', async t => {
+  const f = await fixture(t);
+  const server = await fakeHttp(t);
+  await f.devTools('chrome', `${server.port}\n/chrome\n`);
+  await f.portFile('Dia/User Data/DevToolsActivePort', `${server.port}\n/dia\n`);
+  const { result } = await f.run('select', { override: 'dia' });
+  assert.equal(result.kind, 'ok');
+  assert.equal(result.source, 'override');
+  assert.equal(result.browser.id, 'dia');
+  assert.equal(result.browser.label, 'Dia');
+  assert.equal(result.browser.port, server.port);
+});
+
+test('auto 模式显式端口可绑定扫描发现的浏览器，跳过其不可读文件', async t => {
+  const server = await fakeHttp(t);
+  const f = await fixture(t, { config: `WEB_ACCESS_BROWSER=dia\nWEB_ACCESS_CDP_PORT=${server.port}\n` });
+  const diaPath = await f.portFile('Dia/User Data/DevToolsActivePort', '1\r\n/stale\n');
+  const { result, connections, reads } = await f.run('select', {
+    deniedPaths: { [diaPath]: 'EPERM' }, recordReads: true,
+  });
+  assert.equal(result.kind, 'ok');
+  assert.equal(result.source, 'preference');
+  assert.equal(result.browser.id, 'dia');
+  assert.equal(result.browser.port, server.port);
+  assert.equal(result.browser.endpointSource, 'config-port');
+  assert.ok(!reads.includes(diaPath));
+  assert.equal(connections, 1);
+  assert.equal(server.requests(), 0);
+});
+
+test('auto 模式扫描候选的端口文件不可读时保留不可读事实', async t => {
+  const f = await fixture(t);
+  const diaPath = await f.portFile('Dia/User Data/DevToolsActivePort', '1234\n/dia\n');
+  const { result, connections } = await f.run('select', { deniedPaths: { [diaPath]: 'EACCES' }, rejectTcp: true });
+  assert.equal(result.kind, 'empty');
+  assert.deepEqual(result.inaccessible, [{ id: 'dia', label: 'Dia', devToolsPath: diaPath, code: 'EACCES' }]);
+  assert.deepEqual(result.detected, []);
+  assert.equal(connections, 0);
+});
+
+test('whitelist 模式不扫描：白名单外浏览器保持不可见', async t => {
+  const f = await fixture(t, { config: 'WEB_ACCESS_BROWSER_DISCOVERY=whitelist\n' });
+  const server = await fakeHttp(t);
+  await f.devTools('chrome', `${server.port}\n/chrome\n`);
+  await f.portFile('Dia/User Data/DevToolsActivePort', `${server.port}\n/dia\n`);
+  const { result, connections } = await f.run();
+  assert.equal(result.kind, 'ambiguous');
+  assert.deepEqual(result.detected.map(browser => browser.id), ['chrome']);
+  assert.equal(connections, 1);
+});
+
+test('whitelist 模式只有白名单外浏览器（端口在线）时保持 empty', async t => {
+  const f = await fixture(t, { config: 'WEB_ACCESS_BROWSER_DISCOVERY=whitelist\n' });
+  const server = await fakeHttp(t);
+  await f.portFile('Dia/User Data/DevToolsActivePort', `${server.port}\n/dia\n`);
+  assert.deepEqual(await f.run('select', { rejectTcp: true }), {
+    result: { kind: 'empty', detected: [], configured: null, inaccessible: [] }, connections: 0,
+  });
+});
+
+test('scan 模式只用扫描：白名单路径以路径推断的 id/label 出现', async t => {
+  const server = await fakeHttp(t);
+  const f = await fixture(t, { config: 'WEB_ACCESS_BROWSER_DISCOVERY=scan\r\nWEB_ACCESS_BROWSER=google-chrome\r\n' });
+  await f.devTools('chrome', `${server.port}\n/chrome\n`);
+  const { result, connections } = await f.run();
+  assert.equal(result.kind, 'ok');
+  assert.equal(result.source, 'preference');
+  assert.equal(result.browser.id, 'google-chrome');
+  assert.equal(result.browser.label, 'Google Chrome');
+  assert.deepEqual(result.detected.map(browser => browser.id), ['google-chrome']);
+  assert.equal(connections, 1);
+});
+
+test('scan 模式白名单 id 不再是候选，保持 mismatch', async t => {
+  const server = await fakeHttp(t);
+  const f = await fixture(t, { config: 'WEB_ACCESS_BROWSER_DISCOVERY=scan\nWEB_ACCESS_BROWSER=chrome\n' });
+  await f.devTools('chrome', `${server.port}\n/chrome\n`);
+  const { result } = await f.run();
+  assert.equal(result.kind, 'mismatch');
+  assert.equal(result.source, 'preference');
+  assert.deepEqual(result.detected.map(browser => browser.id), ['google-chrome']);
+});
+
+test('scan 模式显式端口可绑定当前未被扫描到的浏览器', async t => {
+  const server = await fakeHttp(t);
+  const f = await fixture(t, { config: `WEB_ACCESS_BROWSER_DISCOVERY=scan\nWEB_ACCESS_BROWSER=dia\nWEB_ACCESS_CDP_PORT=${server.port}\n` });
+  const { result, connections } = await f.run();
+  assert.equal(result.kind, 'ok');
+  assert.equal(result.source, 'preference');
+  assert.equal(result.browser.id, 'dia');
+  assert.equal(result.browser.port, server.port);
+  assert.equal(result.browser.endpointSource, 'config-port');
+  assert.equal(connections, 1);
+  assert.equal(server.requests(), 0);
+});
+
+for (const mode of ['', 'auto', 'AUTO', ' Scan ']) {
+  test(`WEB_ACCESS_BROWSER_DISCOVERY="${mode}" 归一为默认 auto，扫描兜底可用`, async t => {
+    const f = await fixture(t, { config: `WEB_ACCESS_BROWSER_DISCOVERY=${mode}\n` });
+    const server = await fakeHttp(t);
+    await f.portFile('Dia/User Data/DevToolsActivePort', `${server.port}\n/dia\n`);
+    const { result, connections } = await f.run();
+    assert.equal(result.kind, 'ambiguous');
+    assert.deepEqual(result.detected.map(browser => browser.id), ['dia']);
+    assert.equal(connections, 1);
+  });
+}
+
+for (const mode of ['bogus', 'automatic', 'sc an']) {
+  test(`WEB_ACCESS_BROWSER_DISCOVERY="${mode}" 非法时返回配置错误，不擅自降级`, async t => {
+    const f = await fixture(t, { config: `WEB_ACCESS_BROWSER_DISCOVERY=${mode}\n` });
+    const { result, connections } = await f.run('select', { rejectTcp: true });
+    assert.equal(result.kind, 'config-error');
+    assert.match(result.message, /WEB_ACCESS_BROWSER_DISCOVERY 必须是 auto、whitelist 或 scan/);
+    assert.deepEqual(result.detected, []);
+    assert.equal(connections, 0);
+  });
+}

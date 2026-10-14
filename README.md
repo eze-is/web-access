@@ -136,6 +136,8 @@ WEB_ACCESS_BROWSER=edge
 
 如果系统拒绝读取 `DevToolsActivePort`，或使用固定调试端口，可在同一配置中设置可选的 `WEB_ACCESS_CDP_PORT`。它必须与 `WEB_ACCESS_BROWSER` 配对，填入已核对属于该浏览器的端口；留空使用自动发现。TCP 可达只表示端口在监听，浏览器归属由这份明确配置提供。指定其他浏览器时不会借用此端口，端口失效也不自动降级。
 
+浏览器发现默认在白名单（Chrome / Edge / Chromium / Chrome Canary）之外，扫描用户数据目录下的 `DevToolsActivePort` 文件兜底：白名单外的 Chromium 系浏览器（如 Arc、Dia、Brave 等）开启远程调试 toggle 后即可被自动发现，无需改代码收录。扫描到的浏览器 id 由目录名推断（如 Dia → `dia`），可填入 `WEB_ACCESS_BROWSER` 或 `--browser`。如需收紧行为，可用 `WEB_ACCESS_BROWSER_DISCOVERY` 切换：`whitelist` 只用白名单（与历史行为一致），`scan` 只用通用扫描。
+
 合法值：`chrome` / `edge`
 
 **临时用别的浏览器**（不修改 config.env）：
