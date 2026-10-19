@@ -100,10 +100,19 @@ async function fixture(t, { platform = 'darwin' } = {}) {
   };
 }
 
-async function fakeHttp(t) {
+async function fakeHttp(t, host = '127.0.0.1') {
   let requests = 0;
   const server = http.createServer((_req, res) => { requests++; res.end('{}'); });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen({ port: 0, host, ipv6Only: host === '::1' }, resolve);
+    });
+  } catch (error) {
+    if (host !== '::1' || !['EAFNOSUPPORT', 'EADDRNOTAVAIL'].includes(error.code)) throw error;
+    t.skip('IPv6 loopback is unavailable on this host');
+    return null;
+  }
   t.after(async () => {
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
@@ -170,6 +179,23 @@ test('探测 Dia：识别 User Data，报告远程调试已开启；不进入 pr
   assert.equal(server.requests(), 0);
 });
 
+test('首次配置识别 IPv6-only 调试端口，不发送 HTTP/CDP、不读取 profile', async t => {
+  const server = await fakeHttp(t, '::1');
+  if (!server) return;
+  const f = await fixture(t);
+  const browser = await f.browser(f.appRoot, 'Dia/User Data', `${server.port}\n/devtools/browser/ipv6\n`);
+  const folder = path.join(f.appRoot, 'Dia');
+  const { result, readdirs, reads, connections } = await f.call('probe', { folder });
+  assert.deepEqual(result, {
+    folder, skipped: [], truncated: false,
+    browsers: [{ dataDir: browser, name: 'Dia', remoteDebugging: { enabled: true, port: server.port } }],
+  });
+  assert.equal(connections, 2);
+  assert.deepEqual(readdirs, [folder]);
+  assert.deepEqual(reads.filter(file => file.startsWith(f.appRoot)), [path.join(browser, 'DevToolsActivePort')]);
+  assert.equal(server.requests(), 0);
+});
+
 test('探测 Google：同一文件夹下的多个浏览器分别报告未开启原因，非浏览器子目录不误报', async t => {
   const f = await fixture(t);
   const stale = await closedPort();
@@ -184,7 +210,7 @@ test('探测 Google：同一文件夹下的多个浏览器分别报告未开启�
   assert.match(byName.Chrome.remoteDebugging.detail, new RegExp(`端口 ${stale} 未在监听`));
   assert.equal(byName['Chrome Canary'].dataDir, canary);
   assert.match(byName['Chrome Canary'].remoteDebugging.detail, /没有 DevToolsActivePort/);
-  assert.equal(connections, 1);
+  assert.equal(connections, 2);
 });
 
 test('探测深度有界：第 3 层能找到，第 4 层不再深入', async t => {

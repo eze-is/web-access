@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkPort, displayName, readActivePort, INSPECT_HINT } from './browser-discovery.mjs';
+import { findLoopbackHost, displayName, readActivePort, INSPECT_HINT } from './browser-discovery.mjs';
 
 const MAX_DEPTH = 3;
 const MAX_DIRS = 500; // 防止误指向巨大目录时无界遍历
@@ -103,7 +103,7 @@ async function describe(dataDir) {
   const active = readActivePort(dataDir);
   let remoteDebugging;
   if (active.port) {
-    remoteDebugging = (await checkPort(active.port))
+    remoteDebugging = (await findLoopbackHost(active.port))
       ? { enabled: true, port: active.port }
       : { enabled: false, detail: `DevToolsActivePort 记录的端口 ${active.port} 未在监听（浏览器未运行或开关已关闭）` };
   } else {

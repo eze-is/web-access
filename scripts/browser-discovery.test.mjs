@@ -121,13 +121,22 @@ async function fixture(t, { platform = 'darwin', config = '' } = {}) {
   return { root, home, localAppData, appData, configPath, run, dataDir };
 }
 
-async function fakeHttp(t) {
+async function fakeHttp(t, host = '127.0.0.1') {
   let requests = 0;
   const server = http.createServer((_req, res) => {
     requests++;
     res.end('{}');
   });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen({ port: 0, host, ipv6Only: host === '::1' }, resolve);
+    });
+  } catch (error) {
+    if (host !== '::1' || !['EAFNOSUPPORT', 'EADDRNOTAVAIL'].includes(error.code)) throw error;
+    t.skip('IPv6 loopback is unavailable on this host');
+    return null;
+  }
   t.after(async () => {
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
@@ -294,10 +303,31 @@ for (const platform of ['darwin', 'linux']) {
     const { result, connections, reads, readdirs } = await f.run();
     assert.deepEqual(result, {
       kind: 'ok', source: 'preference',
-      browser: { id: dir, label: platform === 'darwin' ? 'Dia' : 'dia', port: server.port, wsPath },
+      browser: { id: dir, label: platform === 'darwin' ? 'Dia' : 'dia', host: '127.0.0.1', port: server.port, wsPath },
     });
     assert.equal(connections, 1);
     assert.deepEqual(reads, [path.join(dir, 'DevToolsActivePort')]);
+    assert.deepEqual(readdirs, []);
+    assert.equal(server.requests(), 0);
+  });
+}
+
+for (const endpointSource of ['active-port', 'config-port']) {
+  test(`IPv6-only ${endpointSource} 使用同一端口的 ::1，不发送 HTTP/CDP`, async t => {
+    const server = await fakeHttp(t, '::1');
+    if (!server) return;
+    const config = `WEB_ACCESS_BROWSER=~/${DIA}\n` +
+      (endpointSource === 'config-port' ? `WEB_ACCESS_CDP_PORT=${server.port}\n` : '');
+    const f = await fixture(t, { config });
+    const dir = await f.dataDir(DIA, `${server.port}\n/devtools/browser/ipv6-browser\n`);
+    const { result, connections, reads, readdirs } = await f.run();
+    assert.equal(result.kind, 'ok');
+    assert.equal(result.browser.id, dir);
+    assert.equal(result.browser.host, '::1');
+    assert.equal(result.browser.port, server.port);
+    assert.equal(result.browser.wsPath, endpointSource === 'config-port' ? null : '/devtools/browser/ipv6-browser');
+    assert.equal(connections, 2, '只在 IPv4 不可达后尝试 IPv6 loopback');
+    assert.deepEqual(reads, endpointSource === 'config-port' ? [] : [path.join(dir, 'DevToolsActivePort')]);
     assert.deepEqual(readdirs, []);
     assert.equal(server.requests(), 0);
   });
@@ -309,7 +339,7 @@ test('老配置 chrome 无需改动即可选中标准 Chrome 目录', async t =>
   const dir = await f.dataDir(legacyPaths.darwin.chrome[0], `${server.port}\n/devtools/browser/c\n`);
   const { result } = await f.run();
   assert.equal(result.kind, 'ok');
-  assert.deepEqual(result.browser, { id: dir, label: 'Chrome', port: server.port, wsPath: '/devtools/browser/c' });
+  assert.deepEqual(result.browser, { id: dir, label: 'Chrome', host: '127.0.0.1', port: server.port, wsPath: '/devtools/browser/c' });
 });
 
 test('override 高于 config.env，配置文件与环境变量都不参与持久偏好', async t => {
@@ -387,7 +417,7 @@ test('端口文件陈旧且 TCP 未监听时 unavailable(offline)', async t => {
   assert.equal(result.kind, 'unavailable');
   assert.equal(result.reason, 'offline');
   assert.equal(result.port, port);
-  assert.equal(connections, 1);
+  assert.equal(connections, 2);
 });
 
 for (const content of ['0\r\n/fake\r\n', '65536\n/fake\n', 'not-a-port\n', '12junk\n', '']) {
@@ -429,7 +459,7 @@ test('显式端口与配置浏览器绑定，跳过其不可读文件且仅建�
   const dir = await f.dataDir(DIA);
   const { result, connections, reads } = await f.run('select', { deniedPaths: { [path.join(dir, 'DevToolsActivePort')]: 'EPERM' } });
   assert.equal(result.kind, 'ok');
-  assert.deepEqual(result.browser, { id: dir, label: 'Dia', port: server.port, wsPath: null, endpointSource: 'config-port' });
+  assert.deepEqual(result.browser, { id: dir, label: 'Dia', host: '127.0.0.1', port: server.port, wsPath: null, endpointSource: 'config-port' });
   assert.deepEqual(reads, []);
   assert.equal(connections, 1);
   assert.equal(server.requests(), 0);
@@ -480,7 +510,7 @@ test('显式端口离线时不回退到同浏览器的可用文件端口', async
   assert.equal(result.reason, 'offline');
   assert.equal(result.endpointSource, 'config-port');
   assert.deepEqual(reads, []);
-  assert.equal(connections, 1);
+  assert.equal(connections, 2);
 });
 
 test('显式端口缺 WEB_ACCESS_BROWSER 时返回配置错误，override 也不能补绑定', async t => {

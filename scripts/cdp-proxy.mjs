@@ -89,12 +89,12 @@ async function discoverChromePort() {
   connectedBrowser = { id: result.browser.id, label: result.browser.label, source: result.source };
   const tag = result.source === 'override' ? '[--browser 指定]' : '[config.env 偏好]';
   console.log(`[CDP Proxy] 选用 ${result.browser.label}（${result.browser.id}，端口 ${result.browser.port}${result.browser.wsPath ? '，带 wsPath' : ''}）${tag}`);
-  return { port: result.browser.port, wsPath: result.browser.wsPath };
+  return { host: result.browser.host, port: result.browser.port, wsPath: result.browser.wsPath };
 }
 
-function getWebSocketUrl(port, wsPath) {
-  if (wsPath) return `ws://127.0.0.1:${port}${wsPath}`;
-  return `ws://127.0.0.1:${port}/devtools/browser`;
+function getWebSocketUrl(port, wsPath, host = '127.0.0.1') {
+  const authority = host === '::1' ? '[::1]' : host;
+  return `ws://${authority}:${port}${wsPath || '/devtools/browser'}`;
 }
 
 // --- 连接唯一所有者：发现、握手和 CDP 请求共用同一生命周期 ---
@@ -104,7 +104,7 @@ const connection = createCdpConnection({
   discoverUrl: async () => {
     const discovered = await discoverChromePort();
     chromePort = discovered.port;
-    return getWebSocketUrl(discovered.port, discovered.wsPath);
+    return getWebSocketUrl(discovered.port, discovered.wsPath, discovered.host);
   },
   onConnect: () => {
     pinnedBrowser = { id: connectedBrowser.id, label: connectedBrowser.label };
@@ -162,7 +162,7 @@ async function ensureSession(targetId) {
 const pageFrames = createPageFrames({ send: (...args) => sendCDP(...args), ensureSession });
 
 // 拦截页面对 Chrome 调试端口的探测（反风控）
-// 只拦截 127.0.0.1:{chromePort} 的请求，不影响其他任何本地服务
+// 只拦截当前调试端口的 loopback 请求，不影响其他任何本地服务
 async function enablePortGuard(sessionId) {
   if (!chromePort || portGuardedSessions.has(sessionId)) return;
   try {
@@ -170,6 +170,7 @@ async function enablePortGuard(sessionId) {
       patterns: [
         { urlPattern: `http://127.0.0.1:${chromePort}/*`, requestStage: 'Request' },
         { urlPattern: `http://localhost:${chromePort}/*`, requestStage: 'Request' },
+        { urlPattern: `http://[::1]:${chromePort}/*`, requestStage: 'Request' },
       ]
     }, sessionId);
     portGuardedSessions.add(sessionId);

@@ -79,7 +79,7 @@ class FakeWebSocket extends EventTarget {
   send(text) {
     const message = JSON.parse(text);
     const { contextId, targetId, x, y } = message.params || {};
-    record('command', { method: message.method, id: message.id, sessionId: message.sessionId, contextId, targetId, x, y });
+    record('command', { patterns: message.params?.patterns, method: message.method, id: message.id, sessionId: message.sessionId, contextId, targetId, x, y });
     void this.respond(message);
   }
   reply(message, payload) {
@@ -300,6 +300,26 @@ test('真实 HTTP 并行请求在首次发现阶段共享一次发现和一次�
   assert.equal((await shutdown(f, health)).status, 202);
   assert.equal((await entry.exited).code, 0);
 });
+
+for (const [host, authority] of [['127.0.0.1', '127.0.0.1'], ['::1', '[::1]']]) {
+  test(`Proxy 使用发现的 ${host} 连接浏览器并保护 loopback 调试端口`, { timeout: 12000 }, async t => {
+    const f = await fixture(t, { TEST_SELECT: JSON.stringify({
+      kind: 'ok', source: 'preference',
+      browser: { id: '/fake/Chrome', label: 'Chrome', host, port: 9222, wsPath: '/devtools/browser/uuid' },
+    }) });
+    const entry = f.spawn();
+    const health = await f.ready(entry);
+    const events = await f.events();
+    assert.equal(events.find(event => event.action === 'socket').url, `ws://${authority}:9222/devtools/browser/uuid`);
+    assert.equal((await requestJson(f.port, '/eval?target=user-page', { method: 'POST', body: '1' })).status, 200);
+    const guard = (await f.events()).find(event => event.action === 'command' && event.method === 'Fetch.enable');
+    assert.deepEqual(guard.patterns.map(pattern => pattern.urlPattern), [
+      'http://127.0.0.1:9222/*', 'http://localhost:9222/*', 'http://[::1]:9222/*',
+    ]);
+    assert.equal((await shutdown(f, health)).status, 202);
+    assert.equal((await entry.exited).code, 0);
+  });
+}
 
 test('两个子进程原子争抢同一端口，只有赢家发现和连接浏览器', { timeout: 12000 }, async t => {
   const f = await fixture(t);

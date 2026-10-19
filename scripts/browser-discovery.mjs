@@ -156,6 +156,13 @@ export function checkPort(port, host = '127.0.0.1', timeoutMs = 2000) {
   });
 }
 
+// 只探测同一个已选端口的 loopback 地址；优先 IPv4，不猜测其它端口或连接远端主机。
+export async function findLoopbackHost(port) {
+  if (await checkPort(port)) return '127.0.0.1';
+  if (await checkPort(port, '::1')) return '::1';
+  return null;
+}
+
 // 读数据目录根部的 DevToolsActivePort（第 1 行端口，第 2 行 wsPath）。只读这一个文件。
 // 返回 { port, wsPath } 或 { reason, code? }，reason ∈ not-enabled | unreadable | invalid
 export function readActivePort(dataDir) {
@@ -200,7 +207,7 @@ export function getConfiguredBrowser() {
 // 参数：override — 调用方解析自命令行 --browser 的值（null 表示未传）
 // 返回 { kind, browser?, source?, override?, reason?, code?, port?, message? }
 //   kind ∈ 'ok' | 'unavailable' | 'unset' | 'config-error'
-//   ok          = 所选浏览器端口在监听；browser 含 { id, label, port, wsPath, endpointSource? }
+//   ok          = 所选浏览器端口在监听；browser 含 { id, label, host, port, wsPath, endpointSource? }
 //   unavailable = 所选浏览器连不上（reason 同 readActivePort，另有 offline = 端口未监听），硬错
 //   config-error = 配置本身有误（值无效、目录不存在或不是 Chromium 数据目录、显式端口有误）
 //   unset       = 没有偏好也没有 override，需要首次配置
@@ -234,14 +241,16 @@ export async function selectBrowser(override = null) {
 
   if (configuredEndpoint?.id === browser.id) {
     const { port } = configuredEndpoint;
-    if (!(await checkPort(port))) return { kind: 'unavailable', ...facts, reason: 'offline', port, endpointSource: 'config-port' };
-    return { kind: 'ok', ...facts, browser: { ...browser, port, wsPath: null, endpointSource: 'config-port' } };
+    const host = await findLoopbackHost(port);
+    if (!host) return { kind: 'unavailable', ...facts, reason: 'offline', port, endpointSource: 'config-port' };
+    return { kind: 'ok', ...facts, browser: { ...browser, host, port, wsPath: null, endpointSource: 'config-port' } };
   }
 
   const active = readActivePort(browser.id);
   if (!active.port) return { kind: 'unavailable', ...facts, ...active };
-  if (!(await checkPort(active.port))) return { kind: 'unavailable', ...facts, reason: 'offline', port: active.port };
-  return { kind: 'ok', ...facts, browser: { ...browser, port: active.port, wsPath: active.wsPath } };
+  const host = await findLoopbackHost(active.port);
+  if (!host) return { kind: 'unavailable', ...facts, reason: 'offline', port: active.port };
+  return { kind: 'ok', ...facts, browser: { ...browser, host, port: active.port, wsPath: active.wsPath } };
 }
 
 function configError(message) {
