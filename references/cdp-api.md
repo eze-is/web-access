@@ -88,7 +88,9 @@ curl -s "http://localhost:3456/info?target=ID"
 curl -s -X POST "http://localhost:3456/eval?target=ID" -d 'document.title'
 ```
 
-可选 `frame=FRAME_ID`（取自 `/frames`）：在页面里的这个 iframe 中执行，跨站（跨进程）iframe 也可以，不必另开 iframe 的网址。代码在该 iframe 的隔离环境中运行：能读写 iframe 的 DOM，看不到页面自己的 JS 全局变量。`frameId` 不属于该页面主文档的 iframe 时返回 `400`。不带 `frame` 时行为与以前完全相同。
+表达式抛异常或 Promise 被拒绝时返回 `400` 和 `{ "error": "..." }`，优先保留异常描述（含错误消息与可用的堆栈）或抛出的原始值；异常对象不可用时返回 CDP 的异常文本。只有正常求值才返回 `{ "value": ... }`，不会把拒绝的 `Error` 序列化成的 `{}` 当成成功结果。
+
+可选 `frame=FRAME_ID`（取自 `/frames`）：在页面里的这个 iframe 中执行，跨站（跨进程）iframe 也可以，不必另开 iframe 的网址。代码在该 iframe 的隔离环境中运行：能读写 iframe 的 DOM，看不到页面自己的 JS 全局变量。`frameId` 不属于该页面主文档的 iframe 时返回 `400`。不带 `frame` 时在页面主文档中执行。
 ```bash
 curl -s -X POST "http://localhost:3456/eval?target=ID&frame=FRAME_ID" -d 'document.body.innerText'
 ```

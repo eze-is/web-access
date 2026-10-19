@@ -121,6 +121,10 @@ class FakeWebSocket extends EventTarget {
     return null;
   }
   async respond(message) {
+    if (message.method === 'Runtime.evaluate' && process.env.TEST_EVAL_RESPONSE) {
+      this.reply(message, { result: JSON.parse(process.env.TEST_EVAL_RESPONSE) });
+      return;
+    }
     // 已被浏览器解除的 session：与真实 Chrome 一样报错
     if (message.sessionId && this.dead?.has(message.sessionId)) {
       this.reply(message, { error: { code: -32001, message: 'Session with given id not found.' } });
@@ -269,6 +273,35 @@ async function fixture(t, flags = {}) {
 
 async function shutdown(f, health) {
   return requestJson(f.port, '/shutdown', { method: 'POST', body: { instanceId: health.instanceId } });
+}
+
+for (const [name, evaluation, expected] of [
+  ['Promise rejection', {
+    // returnByValue serializes the rejected Error as {}, alongside exceptionDetails.
+    result: { type: 'object', value: {} },
+    exceptionDetails: { text: 'Uncaught (in promise)', exception: { type: 'object', subtype: 'error', description: 'Error: API unavailable\n    at <anonymous>:1:22' } },
+  }, { status: 400, body: { error: 'Error: API unavailable\n    at <anonymous>:1:22' } }],
+  ...['request failed', 0, false, null, ''].map(value => [`thrown ${JSON.stringify(value)}`, {
+    result: { type: value === null ? 'object' : typeof value, value },
+    exceptionDetails: { text: 'Uncaught', exception: { type: value === null ? 'object' : typeof value, value } },
+  }, { status: 400, body: { error: String(value) } }]),
+  ['exception without remote details', {
+    result: { type: 'undefined' },
+    exceptionDetails: { text: 'Uncaught' },
+  }, { status: 400, body: { error: 'Uncaught' } }],
+  ...[0, false, null, ''].map(value => [`successful ${JSON.stringify(value)}`, {
+    result: { type: value === null ? 'object' : typeof value, value },
+  }, { status: 200, body: { value } }]),
+]) {
+  test(`/eval reports ${name}`, { timeout: 12000 }, async t => {
+    const f = await fixture(t, { TEST_EVAL_RESPONSE: JSON.stringify(evaluation) });
+    const entry = f.spawn();
+    const health = await f.ready(entry);
+    const response = await requestJson(f.port, '/eval?target=user-page', { method: 'POST', body: 'testExpression()' });
+    assert.deepEqual(response, expected);
+    assert.equal((await shutdown(f, health)).status, 202);
+    assert.equal((await entry.exited).code, 0);
+  });
 }
 
 test('真实 HTTP 并行请求在首次发现阶段共享一次发现和一次握手', { timeout: 12000 }, async t => {

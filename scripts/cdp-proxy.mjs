@@ -424,13 +424,17 @@ const server = http.createServer(async (req, res) => {
         awaitPromise: true,
         ...(contextId ? { contextId } : {}),
       }, sid);
-      // 不带 frame 时保持原有返回方式不变；带 frame 时如实报告 CDP 错误
+      // 带 frame 时如实报告 CDP 协议错误；不带 frame 时保留原有协议错误处理方式。
       if (contextId && resp.error) throw new Error('Runtime.evaluate: ' + resp.error.message);
-      if (resp.result?.result?.value !== undefined) {
-        res.end(JSON.stringify({ value: resp.result.result.value }));
-      } else if (resp.result?.exceptionDetails) {
+      // 异常也可能带 result.value（returnByValue 会把 Error 序列化成 {}），必须先判断异常。
+      if (resp.result?.exceptionDetails) {
+        const { exception, text } = resp.result.exceptionDetails;
+        const error = exception?.description ||
+          (exception && Object.hasOwn(exception, 'value') ? String(exception.value) : text);
         res.statusCode = 400;
-        res.end(JSON.stringify({ error: resp.result.exceptionDetails.text }));
+        res.end(JSON.stringify({ error }));
+      } else if (resp.result?.result?.value !== undefined) {
+        res.end(JSON.stringify({ value: resp.result.result.value }));
       } else {
         res.end(JSON.stringify(resp.result));
       }
