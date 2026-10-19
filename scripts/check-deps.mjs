@@ -244,6 +244,16 @@ async function main() {
   if (migrateUserData()) ensureConfigExists();
   checkNode();
 
+  // 站点经验是本地数据，在浏览器检查或连接等待前输出，失败时也能读取已有经验。
+  let sites = [];
+  try {
+    sites = fs.readdirSync(USER_DATA.sitePatterns)
+      .filter(f => f.endsWith('.md'))
+      .map(f => f.replace(/\.md$/, ''));
+  } catch {}
+  console.log(`\nsite-patterns: ${sites.length ? sites.join(', ') : '（暂无）'}`);
+  console.log(`  目录：${USER_DATA.sitePatterns}（文件名 {domain}.md）`);
+
   // 期望的浏览器值本身无效时先报配置错误，不进入「浏览器不一致 → 停止服务」的复用判断。
   let browserId = opts.browser || getConfiguredBrowser();
   if (browserId) {
@@ -264,16 +274,6 @@ async function main() {
 
   const proxyOk = await ensureProxy(browserId, opts.browser, health);
   if (!proxyOk) process.exit(1);
-
-  // 列出已有站点经验，附目录路径供 Agent 读写
-  let sites = [];
-  try {
-    sites = fs.readdirSync(USER_DATA.sitePatterns)
-      .filter(f => f.endsWith('.md'))
-      .map(f => f.replace(/\.md$/, ''));
-  } catch {}
-  console.log(`\nsite-patterns: ${sites.length ? sites.join(', ') : '（暂无）'}`);
-  console.log(`  目录：${USER_DATA.sitePatterns}（文件名 {domain}.md）`);
 }
 
 await main();

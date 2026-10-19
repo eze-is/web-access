@@ -385,6 +385,31 @@ async function unusedPort() {
   return port;
 }
 
+for (const scenario of ['unset', 'invalid', 'offline', 'maintenance']) {
+  test(`本地站点经验不依赖浏览器就绪：${scenario} 退出前仍列出文件与目录`, async t => {
+    const f = await fixture(t, { configured: scenario === 'invalid' ? 'not-a-data-directory' : scenario === 'offline' ? 'chrome' : null });
+    const patterns = path.join(f.home, '.web-access', 'site-patterns');
+    await fs.mkdir(path.join(patterns, 'archive'), { recursive: true });
+    await fs.writeFile(path.join(patterns, 'example.com.md'), 'local guidance');
+    await fs.writeFile(path.join(patterns, 'ignore.txt'), 'not a site pattern');
+    const port = scenario === 'maintenance'
+      ? (await fakeProxy(t, { maintenance: true })).port
+      : await unusedPort();
+    const extraEnv = scenario === 'offline' ? { TEST_SELECT: JSON.stringify({
+      kind: 'unavailable', source: 'preference', reason: 'offline', port: 9222,
+      browser: { id: legacyDataDir(f, 'chrome'), label: 'Chrome' },
+    }) } : {};
+    const result = await f.run(port, [], extraEnv);
+    assert.equal(result.code, scenario === 'unset' ? 2 : 1, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /site-patterns: example\.com/);
+    assert.equal(result.stdout.split('site-patterns:').length - 1, 1);
+    assert.ok(result.stdout.includes(patterns), result.stdout);
+    assert.ok(result.stdout.indexOf('site-patterns:') < result.stdout.search(/browser:|proxy:/), result.stdout);
+    assert.doesNotMatch(result.stdout, /site-patterns:.*(?:ignore|archive)/);
+    assert.equal((await f.events()).filter(event => event.action === 'spawn').length, 0);
+  });
+}
+
 test('未设置浏览器时 exit 2：列出应用数据根目录的最外层文件夹名与探测命令，不进入文件夹、不启动服务', async t => {
   const f = await fixture(t, { dataDirs: false });
   const root = appDataRoot(f);
