@@ -26,6 +26,7 @@ curl -s http://localhost:3456/health
 | `pendingCommands` | 未完成的 CDP 命令数 |
 | `activeRequests` | 执行中的浏览器操作请求数，不含健康检查和维护请求 |
 | `managedTabs` | 当前服务管理的 Agent 标签页数 |
+| `maxTabs` | `CDP_MAX_TABS` 生效值，`0` 表示不限制；创建中的标签页也预留配额，但尚未计入 `managedTabs` |
 | `maintenance` | 正在停止；前置检查不得把它当作可用或启动第二个实例 |
 
 ### POST /shutdown
@@ -54,6 +55,12 @@ curl -s -X POST --data-raw 'https://example.com' http://localhost:3456/new
 curl -s -X POST --data-raw 'https://www.xiaohongshu.com/explore/xxx?xsec_source=app_share&xsec_token=ABC&type=normal' http://localhost:3456/new
 ```
 > v2.5.3 起改为 POST。旧的 `GET /new?url=...` 返回 400 + 迁移指引，详见 `migration-2.5.3.md`。
+
+可在启动服务的环境中设置 `CDP_MAX_TABS` 限制本实例同时管理的 Agent 标签页数。未设置或设为 `0` 保持不限制；其他值必须是正的十进制安全整数，无效配置会在服务绑定端口、连接浏览器之前明确报错。该变量从进程环境读取，不从 `config.env` 读取；更改后须通过已有维护命令在服务空闲时重启，不会修改或抢替正在执行任务的共享服务。
+
+达到上限时返回 `429` 和 `{ "error": "...", "hint": "...", "managedTabs": ["TARGET_ID", "..."] }`。配额包含正在创建、尚未取得 ID 的标签页，因此列表可能为空。请等待创建完成，或先 `/close` 列表中已不需要的 Agent 标签页再重试。创建失败、关闭成功或浏览器通知标签页已销毁后释放相应配额；关闭失败保留配额。仅统计此服务通过 `/new` 创建的标签页，不计用户已有标签页，不为腾出配额自动淘汰标签页。原有 15 分钟闲置清理规则保持不变。
+
+此上限只限制当前追踪的 Agent 标签页加创建中的请求，并非浏览器实际标签页总数或内存的硬上限。沿用既有生命周期：WebSocket 断线会清空 `managedTabs`，重连不会认领之前留下的标签页。创建命令超时或连接中断时，即使请求失败，浏览器也可能已创建标签页；请先用 `/targets` 检查现状，不要直接重复创建。
 
 ### GET /close?target=ID
 关闭指定 tab。

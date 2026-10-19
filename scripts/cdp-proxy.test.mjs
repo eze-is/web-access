@@ -127,6 +127,56 @@ class FakeWebSocket extends EventTarget {
       record('response', { method: message.method, error: true });
       return;
     }
+    if (process.env.TEST_TAB_CAP === '1') {
+      this.pages ||= new Set(['user-page']);
+      if (message.method === 'Target.setDiscoverTargets') {
+        this.reply(message, { result: {} });
+        if (process.env.TEST_DISCONNECT_AFTER_DISCOVERY === '1' && !FakeWebSocket.disconnectedAfterDiscovery) {
+          FakeWebSocket.disconnectedAfterDiscovery = true;
+          this.close();
+        }
+        return;
+      }
+      if (message.method === 'Target.createTarget') {
+        const number = this.created = (this.created || 0) + 1;
+        if (process.env.TEST_HOLD_CREATE === '1') await waitBarrier('create');
+        if (process.env.TEST_FAIL_CREATE === '1' && number === 1) {
+          this.reply(message, { error: { code: -32000, message: 'Cannot create target' } });
+          return;
+        }
+        const targetId = 'managed-page-' + number;
+        this.pages.add(targetId);
+        if (process.env.TEST_DESTROY_ON_CREATE === '1') {
+          this.pages.delete(targetId);
+          this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ method: 'Target.targetDestroyed', params: { targetId } }) }));
+        }
+        this.reply(message, { result: { targetId } });
+        if (process.env.TEST_DISCONNECT_AFTER_CREATE === '1' && !FakeWebSocket.disconnectedAfterCreate) {
+          FakeWebSocket.disconnectedAfterCreate = true;
+          this.close();
+        }
+        return;
+      }
+      if (message.method === 'Target.closeTarget') {
+        if (process.env.TEST_FAIL_CLOSE === '1' && !this.failedClose) {
+          this.failedClose = true;
+          this.reply(message, { result: { success: false } });
+        } else {
+          this.pages.delete(message.params.targetId);
+          this.reply(message, { result: { success: true } });
+        }
+        return;
+      }
+      if (message.method === 'Target.getTargets') {
+        this.reply(message, { result: { targetInfos: [...this.pages].map(targetId => ({ targetId, type: 'page' })) } });
+        return;
+      }
+      if (message.method === 'Runtime.evaluate' && message.params.expression === 'destroy-managed-tab') {
+        const targetId = [...this.pages].find(id => id.startsWith('managed-page-'));
+        this.pages.delete(targetId);
+        this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ method: 'Target.targetDestroyed', params: { targetId } }) }));
+      }
+    }
     if (process.env.TEST_FRAMES === '1') {
       const result = this.respondFrames(message);
       if (result) {
@@ -568,3 +618,120 @@ test('浏览器解除子 session 后从缓存删除，下一次重新 attach，�
   assert.equal((await shutdown(f, health)).status, 202);
   assert.equal((await entry.exited).code, 0);
 });
+
+test('tab cap: concurrent creates reserve capacity before CDP replies', { timeout: 12000 }, async t => {
+  const f = await fixture(t, { TEST_TAB_CAP: '1', TEST_HOLD_CREATE: '1', CDP_MAX_TABS: '2' });
+  const entry = f.spawn();
+  await f.ready(entry);
+  const requests = Array.from({ length: 8 }, () => requestJson(f.port, '/new', { method: 'POST', body: 'about:blank' }));
+  await f.waitEvent(events => events.filter(event => event.action === 'request' && event.url === '/new').length === 8 &&
+    commandsOf(events, 'Target.createTarget').length >= 2);
+  const beforeRelease = commandsOf(await f.events(), 'Target.createTarget').length;
+  await f.release('create');
+  const responses = await Promise.all(requests);
+  assert.equal(beforeRelease, 2);
+  assert.equal(responses.filter(response => response.status === 200).length, 2);
+  const denied = responses.filter(response => response.status === 429);
+  assert.equal(denied.length, 6);
+  for (const response of denied) {
+    assert.match(response.body.error, /2/);
+    assert.match(response.body.hint, /close/);
+    assert.ok(Array.isArray(response.body.managedTabs));
+  }
+  assert.equal((await requestJson(f.port, '/health')).body.maxTabs, 2);
+  assert.equal(commandsOf(await f.events(), 'Target.closeTarget').length, 0, '上限不自动淘汰标签页');
+});
+
+test('tab cap: a failed create releases its reservation', { timeout: 12000 }, async t => {
+  const f = await fixture(t, { TEST_TAB_CAP: '1', TEST_FAIL_CREATE: '1', CDP_MAX_TABS: '1' });
+  await f.ready(f.spawn());
+  assert.equal((await requestJson(f.port, '/new', { method: 'POST', body: 'about:blank' })).status, 500);
+  assert.equal((await requestJson(f.port, '/new', { method: 'POST', body: 'about:blank' })).status, 200);
+  assert.equal((await requestJson(f.port, '/new', { method: 'POST', body: 'about:blank' })).status, 429);
+});
+
+test('tab cap: successful close frees capacity, failed close retains it, user tabs do not count', { timeout: 12000 }, async t => {
+  const f = await fixture(t, { TEST_TAB_CAP: '1', TEST_FAIL_CLOSE: '1', CDP_MAX_TABS: '1' });
+  await f.ready(f.spawn());
+  assert.equal((await requestJson(f.port, '/targets')).body.length, 1, '已有用户标签页不占 Agent 配额');
+  const created = await requestJson(f.port, '/new', { method: 'POST', body: 'about:blank' });
+  assert.equal(created.status, 200);
+  const full = await requestJson(f.port, '/new', { method: 'POST', body: 'about:blank' });
+  assert.equal(full.status, 429);
+  assert.deepEqual(full.body.managedTabs, [created.body.targetId]);
+  assert.equal((await requestJson(f.port, '/close?target=' + created.body.targetId)).body.success, false);
+  assert.equal((await requestJson(f.port, '/new', { method: 'POST', body: 'about:blank' })).status, 429);
+  assert.equal((await requestJson(f.port, '/close?target=' + created.body.targetId)).body.success, true);
+  assert.equal((await requestJson(f.port, '/new', { method: 'POST', body: 'about:blank' })).status, 200);
+  assert.ok((await requestJson(f.port, '/targets')).body.some(target => target.targetId === 'user-page'));
+});
+
+test('tab cap: browser target destruction frees capacity', { timeout: 12000 }, async t => {
+  const f = await fixture(t, { TEST_TAB_CAP: '1', CDP_MAX_TABS: '1' });
+  await f.ready(f.spawn());
+  assert.equal((await requestJson(f.port, '/new', { method: 'POST', body: 'about:blank' })).status, 200);
+  assert.equal((await requestJson(f.port, '/new', { method: 'POST', body: 'about:blank' })).status, 429);
+  await requestJson(f.port, '/eval?target=user-page', { method: 'POST', body: 'destroy-managed-tab' });
+  assert.equal((await requestJson(f.port, '/health')).body.managedTabs, 0);
+  assert.equal((await requestJson(f.port, '/new', { method: 'POST', body: 'about:blank' })).status, 200);
+  assert.equal(commandsOf(await f.events(), 'Target.setDiscoverTargets').length, 1);
+});
+
+test('tab cap: destruction before the create response does not leave a stale slot', { timeout: 12000 }, async t => {
+  const f = await fixture(t, { TEST_TAB_CAP: '1', TEST_DESTROY_ON_CREATE: '1', CDP_MAX_TABS: '1' });
+  await f.ready(f.spawn());
+  for (let i = 0; i < 2; i++) {
+    assert.equal((await requestJson(f.port, '/new', { method: 'POST', body: 'about:blank' })).status, 200);
+    assert.equal((await requestJson(f.port, '/health')).body.managedTabs, 0);
+  }
+});
+
+test('tab cap: disconnect immediately after create reply cannot restore stale ownership', { timeout: 12000 }, async t => {
+  const f = await fixture(t, { TEST_TAB_CAP: '1', TEST_DISCONNECT_AFTER_CREATE: '1', CDP_MAX_TABS: '1' });
+  await f.ready(f.spawn());
+  const first = await requestJson(f.port, '/new', { method: 'POST', body: 'about:blank' });
+  const disconnected = (await requestJson(f.port, '/health')).body;
+  assert.equal(disconnected.connected, false);
+  assert.equal(disconnected.managedTabs, 0, '已退役连接的 create 回复不能重新写入 ownership');
+  assert.equal(first.status, 500);
+  assert.match(first.body.error, /连接/);
+  assert.equal((await requestJson(f.port, '/new', { method: 'POST', body: 'about:blank' })).status, 200,
+    '旧请求的 reservation 已释放，重连后可以创建');
+});
+
+test('tab cap: disconnect immediately after discovery reply requires a new subscription before create', { timeout: 12000 }, async t => {
+  const f = await fixture(t, { TEST_TAB_CAP: '1', TEST_DISCONNECT_AFTER_DISCOVERY: '1', CDP_MAX_TABS: '1' });
+  await f.ready(f.spawn());
+  assert.equal((await requestJson(f.port, '/new', { method: 'POST', body: 'about:blank' })).status, 200);
+  const sequence = (await f.events()).filter(event => event.action === 'command' &&
+    ['Target.setDiscoverTargets', 'Target.createTarget'].includes(event.method)).map(event => event.method);
+  assert.deepEqual(sequence, ['Target.setDiscoverTargets', 'Target.setDiscoverTargets', 'Target.createTarget']);
+});
+
+for (const value of [undefined, '0']) {
+  test('tab cap: ' + String(value) + ' keeps unlimited creation', { timeout: 12000 }, async t => {
+    const f = await fixture(t, { TEST_TAB_CAP: '1', CDP_MAX_TABS: value });
+    await f.ready(f.spawn());
+    for (let i = 0; i < 16; i++) {
+      assert.equal((await requestJson(f.port, '/new', { method: 'POST', body: 'about:blank' })).status, 200);
+    }
+    assert.equal((await requestJson(f.port, '/health')).body.maxTabs, 0);
+    assert.equal(commandsOf(await f.events(), 'Target.setDiscoverTargets').length, 0);
+  });
+}
+
+for (const value of ['-1', '1.5', '2tabs', '', 'Infinity', '9007199254740992']) {
+  test('tab cap: invalid configuration ' + JSON.stringify(value) + ' fails before connecting', { timeout: 12000 }, async t => {
+    const f = await fixture(t, { CDP_MAX_TABS: value });
+    const entry = f.spawn();
+    let timer;
+    const exited = await Promise.race([
+      entry.exited,
+      new Promise(resolve => { timer = setTimeout(() => resolve({ code: 'still running' }), 1000); }),
+    ]);
+    clearTimeout(timer);
+    assert.equal(exited.code, 1);
+    assert.match(entry.output, /CDP_MAX_TABS/);
+    assert.equal((await f.events()).filter(event => event.action === 'socket').length, 0);
+  });
+}

@@ -27,6 +27,11 @@ const BROWSER_OVERRIDE = parseBrowserArg();
 const PORT = parseInt(process.env.CDP_PROXY_PORT || '3456');
 const sessions = new Map(); // targetId -> sessionId
 const managedTabs = new Map(); // targetId -> { lastAccessed: number }
+let maxTabs = 0; // 0 不限制；只计算本实例创建的 Agent 标签页
+let creatingTabs = 0; // Target.createTarget 尚未结算的配额预留
+let connectionGeneration = 0;
+const destroyedWhileCreating = new Set();
+let targetDiscoveryPromise = null;
 const TAB_IDLE_TIMEOUT = parseInt(process.env.CDP_TAB_IDLE_TIMEOUT || '900000'); // 15 min default
 const CLEANUP_INTERVAL = 60000; // sweep every 60s
 const INSTANCE_ID = randomUUID();
@@ -111,14 +116,22 @@ const connection = createCdpConnection({
     lifecycleLog(`已连接浏览器 (端口 ${chromePort})`);
   },
   onDisconnect: (error) => {
+    connectionGeneration++;
     chromePort = null;
     sessions.clear();
     managedTabs.clear();
     portGuardedSessions.clear();
+    targetDiscoveryPromise = null;
     lifecycleLog(`连接已失效：${error.message}`);
   },
   onDiagnostic: (error) => lifecycleLog(`连接诊断：${error.message}`),
   onEvent: (msg) => {
+    if (msg.method === 'Target.targetDestroyed') {
+      const { targetId } = msg.params;
+      forgetTab(targetId);
+      // 浏览器可能在 createTarget 的响应到达前关闭这个新标签页。
+      if (creatingTabs > 0) destroyedWhileCreating.add(targetId);
+    }
     if (msg.method === 'Target.attachedToTarget') {
       const { sessionId, targetInfo } = msg.params;
       sessions.set(targetInfo.targetId, sessionId);
@@ -139,8 +152,28 @@ const connection = createCdpConnection({
   },
 });
 
-const connect = () => connection.connect();
 const sendCDP = (method, params = {}, sessionId = null) => connection.send(method, params, sessionId);
+async function connect() {
+  await connection.connect();
+  if (!maxTabs) return;
+  const discoveryGeneration = connectionGeneration;
+  // 只在显式启用上限时订阅销毁事件；并发连接共用一次订阅。
+  if (!targetDiscoveryPromise) {
+    const discovery = sendCDP('Target.setDiscoverTargets', { discover: true }).then(resp => {
+      if (resp.error) throw new Error('Target.setDiscoverTargets: ' + resp.error.message);
+    });
+    targetDiscoveryPromise = discovery;
+    discovery.catch(() => {
+      if (targetDiscoveryPromise === discovery) targetDiscoveryPromise = null;
+    });
+  }
+  const discovery = targetDiscoveryPromise;
+  await discovery;
+  if (discoveryGeneration !== connectionGeneration || !connection.connected) {
+    if (targetDiscoveryPromise === discovery) targetDiscoveryPromise = null;
+    throw new Error('订阅标签页状态期间浏览器连接已失效，请重试');
+  }
+}
 
 // 已启用端口拦截的 session 集合（避免重复启用）
 const portGuardedSessions = new Set();
@@ -182,14 +215,25 @@ function touchTab(targetId) {
   if (entry) entry.lastAccessed = Date.now();
 }
 
+function forgetTab(targetId) {
+  const sid = sessions.get(targetId);
+  sessions.delete(targetId);
+  managedTabs.delete(targetId);
+  if (sid) portGuardedSessions.delete(sid);
+}
+
 async function cleanupIdleTabs() {
   if (!connection.connected) return;
   const now = Date.now();
   for (const [targetId, info] of managedTabs) {
     if (now - info.lastAccessed < TAB_IDLE_TIMEOUT) continue;
-    try { await sendCDP('Target.closeTarget', { targetId }); } catch { /* tab may already be closed */ }
-    sessions.delete(targetId);
-    managedTabs.delete(targetId);
+    try {
+      const resp = await sendCDP('Target.closeTarget', { targetId });
+      if (maxTabs && !resp.result?.success) continue;
+    } catch {
+      if (maxTabs) continue; // 不能把关闭失败的标签页当作已释放配额
+    }
+    forgetTab(targetId);
     console.log(`[CDP Proxy] Auto-closed idle tab: ${targetId}`);
   }
 }
@@ -269,6 +313,7 @@ const server = http.createServer(async (req, res) => {
         browser: connectedBrowser,
         sessions: sessions.size,
         managedTabs: managedTabs.size,
+        maxTabs,
         chromePort,
         pid: process.pid,
         instanceId: INSTANCE_ID,
@@ -345,11 +390,31 @@ const server = http.createServer(async (req, res) => {
       }
       const body = (await readBody(req)).trim();
       const targetUrl = body || 'about:blank';
+      if (maxTabs && managedTabs.size + creatingTabs >= maxTabs) {
+        res.statusCode = 429;
+        res.end(JSON.stringify({
+          error: `已达同时打开的 Agent tab 上限（${managedTabs.size + creatingTabs}/${maxTabs}，含正在创建）`,
+          hint: '请先 /close 不再需要的 Agent tab；或调整 CDP_MAX_TABS 后通过维护命令重启服务',
+          managedTabs: [...managedTabs.keys()],
+        }));
+        return;
+      }
       // 先创建空白页并完成 attach，再显式导航。Target.createTarget({ url }) 会先暴露
       // readyState=complete 的 about:blank，导致慢页面在真正开始加载前被误判为完成。
-      const resp = await sendCDP('Target.createTarget', { url: 'about:blank', background: true });
-      const targetId = resp.result.targetId;
-      managedTabs.set(targetId, { lastAccessed: Date.now() });
+      let targetId;
+      const creationGeneration = connectionGeneration;
+      creatingTabs++;
+      try {
+        const resp = await sendCDP('Target.createTarget', { url: 'about:blank', background: true });
+        if (creationGeneration !== connectionGeneration) {
+          throw new Error('创建标签页时连接已失效；标签页可能已创建，请先通过 /targets 检查，避免重复创建');
+        }
+        targetId = resp.result.targetId;
+        if (!destroyedWhileCreating.has(targetId)) managedTabs.set(targetId, { lastAccessed: Date.now() });
+      } finally {
+        creatingTabs--;
+        if (!creatingTabs) destroyedWhileCreating.clear();
+      }
 
       // 等待页面加载
       if (targetUrl !== 'about:blank') {
@@ -366,8 +431,7 @@ const server = http.createServer(async (req, res) => {
     // GET /close?target=xxx - 关闭 tab
     else if (pathname === '/close') {
       const resp = await sendCDP('Target.closeTarget', { targetId: q.target });
-      sessions.delete(q.target);
-      managedTabs.delete(q.target);
+      if (!maxTabs || resp.result?.success) forgetTab(q.target);
       res.end(JSON.stringify(resp.result));
     }
 
@@ -650,6 +714,13 @@ const server = http.createServer(async (req, res) => {
 
 // 服务端口的原子绑定决定唯一实例，不用先探测再绑定的竞态窗口。
 async function main() {
+  const rawMaxTabs = process.env.CDP_MAX_TABS;
+  if (rawMaxTabs !== undefined) {
+    if (!/^\d+$/.test(rawMaxTabs.trim()) || !Number.isSafeInteger(Number(rawMaxTabs))) {
+      throw new Error('配置错误：CDP_MAX_TABS 必须是 0（不限制）或正的安全整数');
+    }
+    maxTabs = Number(rawMaxTabs);
+  }
   try {
     await new Promise((resolve, reject) => {
       server.once('error', reject);
