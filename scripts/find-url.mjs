@@ -147,15 +147,18 @@ function searchHistory(profileDir, profileName, browserLabel, keywords, since, l
     const orderBy = sort === 'visits'
       ? 'visit_count DESC, last_visit_time DESC'
       : 'last_visit_time DESC';
-    const sql = `SELECT title, url,
+    // 文本转成 hex 后再用制表符传输，避免标题或 URL 里的制表符/换行破坏字段与记录边界。
+    const sql = `SELECT hex(title), hex(url),
       datetime((last_visit_time - 11644473600000000)/1000000, 'unixepoch', 'localtime') AS visit,
       visit_count
       FROM urls WHERE ${conds.join(' AND ')}
       ORDER BY ${orderBy} LIMIT ${limitClause};`;
 
     const raw = execFileSync('sqlite3', ['-separator', '\t', tmp, sql], { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 });
-    return raw.trim().split('\n').filter(Boolean).map(line => {
-      const [title, url, visit, visit_count] = line.split('\t');
+    return raw.split('\n').filter(Boolean).map(line => {
+      const [titleHex, urlHex, visit, visit_count] = line.split('\t');
+      const title = Buffer.from(titleHex, 'hex').toString('utf8');
+      const url = Buffer.from(urlHex, 'hex').toString('utf8');
       return { browser: browserLabel, profile: profileName, title, url, visit, visit_count: parseInt(visit_count, 10) };
     });
   } catch (e) {
@@ -167,8 +170,8 @@ function searchHistory(profileDir, profileName, browserLabel, keywords, since, l
 }
 
 // --- 输出格式化 ---------------------------------------------------------
-// 用 `|` 作字段分隔符；字段内含 `|` 的替换成 `│`（全宽竖线）避免歧义
-const clean = s => String(s ?? '').replaceAll('|', '│').trim();
+// 一条记录保持一行；用 `|` 作字段分隔符，字段内的 `|` 替换成 `│` 避免歧义。
+const clean = s => String(s ?? '').replace(/[\r\n\t]+/g, ' ').replaceAll('|', '│').trim();
 
 function originTag(item, showBrowser, showProfile) {
   if (showBrowser && showProfile) return '@' + clean(item.browser) + '-' + clean(item.profile);
