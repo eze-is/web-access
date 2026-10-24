@@ -203,9 +203,10 @@ node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs" --browser edge
 
 环境检查（Agent 运行时会自动完成前置检查，无需手动执行）：
 
+下面的 `${CLAUDE_SKILL_DIR}` 表示 Skill 安装目录，不应假定所有 Agent 的 shell 都有同名环境变量。Codex、Cursor、Gemini CLI 等宿主或手动运行时，请按实际加载的 `SKILL.md` 所在目录替换，并保留路径引号。文中的 WebSearch / WebFetch 也应映射到宿主实际提供的搜索 / 网页读取工具；不要求安装同名工具。详见 [宿主适配](SKILL.md#宿主适配路径与工具名)。
+
 ```bash
 node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
-# $CLAUDE_SKILL_DIR 是 skill 加载时自动设置的环境变量
 # 手动运行请替换为实际路径，如 ~/.claude/skills/web-access
 ```
 
