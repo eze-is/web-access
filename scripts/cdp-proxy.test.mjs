@@ -6,7 +6,7 @@ import fsp from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
@@ -144,10 +144,13 @@ class FakeWebSocket extends EventTarget {
     if (message.method === 'Fetch.failRequest' && process.env.TEST_BACKGROUND_PENDING === '1') await waitBarrier('pending');
     let result = {};
     if (message.method === 'Target.getTargets') {
-      result = { targetInfos: [{ targetId: 'user-page', type: 'page', title: 'Fake page', url: 'about:blank' }] };
+      result = { targetInfos: [{ targetId: 'user-page', type: 'page', title: 'Fake page', url: 'about:blank' }, ...(this.pages || [])] };
       if (process.env.TEST_FRAMES === '1') result.targetInfos.push({ targetId: 'oopif-frame', type: 'iframe', url: 'http://127.0.0.1/child' });
     }
-    if (message.method === 'Target.createTarget') result = { targetId: 'managed-page' };
+    if (message.method === 'Target.createTarget') {
+      (this.pages ??= []).push({ targetId: 'managed-page', type: 'page', title: 'Managed', url: 'about:blank' });
+      result = { targetId: 'managed-page' };
+    }
     if (message.method === 'Target.closeTarget') result = { success: true };
     if (message.method === 'Target.attachToTarget') result = { sessionId: 'fake-session' };
     if (message.method === 'Runtime.evaluate') {
@@ -245,7 +248,7 @@ async function fixture(t, flags = {}) {
     port, root, scripts, events, waitEvent,
     release: name => fsp.writeFile(path.join(root, name + '-release'), ''),
     spawn() {
-      const child = spawn(process.execPath, ['--import', path.join(scripts, 'preload.mjs'), path.join(scripts, 'cdp-proxy.mjs')], {
+      const child = spawn(process.execPath, ['--import', pathToFileURL(path.join(scripts, 'preload.mjs')).href, path.join(scripts, 'cdp-proxy.mjs')], {
         env: { ...process.env, CDP_PROXY_PORT: String(port), TEST_RUNTIME_ROOT: root, ...flags },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
@@ -379,7 +382,7 @@ test('/shutdown 单独存在 HTTP handler 时也拒绝关闭', { timeout: 12000 
   const f = await fixture(t);
   const entry = f.spawn();
   const health = await f.ready(entry);
-  const active = beginRequest(f.port, '/eval?target=user-page', { method: 'POST', body: 'document.title', deferBody: true });
+  const active = beginRequest(f.port, '/eval?target=user-page&userTab=1', { method: 'POST', body: 'document.title', deferBody: true });
   await f.waitEvent(events => events.find(event => event.action === 'response' && event.method === 'Fetch.enable'));
   const busy = await shutdown(f, health);
   assert.equal(busy.status, 409);
@@ -431,7 +434,7 @@ test('客户端断开后仍在运行的导航 handler 持续占用，完成后�
   const f = await fixture(t);
   const entry = f.spawn();
   const health = await f.ready(entry);
-  const navigation = beginRequest(f.port, '/navigate?target=user-page', { method: 'POST', body: 'https://fake.example/page' });
+  const navigation = beginRequest(f.port, '/navigate?target=user-page&userTab=1', { method: 'POST', body: 'https://fake.example/page' });
   const aborted = navigation.done.catch(error => error);
   await f.waitEvent(events => events.find(event => event.action === 'response' && event.method === 'Page.enable'));
   navigation.request.destroy();
@@ -501,9 +504,9 @@ test('/frames 列出 iframe；/eval?frame= 在跨进程 iframe 的子 session �
     ['local-frame', false, 'http://localhost/same'],
     ['oopif-frame', true, 'http://127.0.0.1/child'],
   ]);
-  const inFrame = await requestJson(f.port, '/eval?target=user-page&frame=oopif-frame', { method: 'POST', body: 'document.title' });
+  const inFrame = await requestJson(f.port, '/eval?target=user-page&userTab=1&frame=oopif-frame', { method: 'POST', body: 'document.title' });
   assert.deepEqual(inFrame.body, { value: 'frame:frame-session-1' });
-  const plain = await requestJson(f.port, '/eval?target=user-page', { method: 'POST', body: 'document.title' });
+  const plain = await requestJson(f.port, '/eval?target=user-page&userTab=1', { method: 'POST', body: 'document.title' });
   assert.deepEqual(plain.body, { value: 'fake value' });
   const evaluations = commandsOf(await f.events(), 'Runtime.evaluate').filter(event => !event.contextId && event.sessionId === 'fake-session');
   assert.ok(evaluations.length >= 1);
@@ -519,7 +522,7 @@ test('/eval?frame= 只接受本页面 iframe 的 frameId，其他目标或格式
   const entry = f.spawn();
   const health = await f.ready(entry);
   for (const frame of ['user-page', 'other-page', '%23pay', '']) {
-    const response = await requestJson(f.port, `/eval?target=user-page&frame=${frame}`, { method: 'POST', body: '1' });
+    const response = await requestJson(f.port, `/eval?target=user-page&userTab=1&frame=${frame}`, { method: 'POST', body: '1' });
     assert.equal(response.status, 400, frame);
     assert.match(response.body.error, /frame/);
   }
@@ -542,11 +545,11 @@ test('/clickXY 校验参数；命中跨进程 iframe 时鼠标事件扣除偏移
     assert.match(response.body.error, /x、y/);
   }
   assert.equal(commandsOf(await f.events(), 'Input.dispatchMouseEvent').length, 0);
-  const outside = await requestJson(f.port, '/clickXY?target=user-page&x=5000&y=5000');
+  const outside = await requestJson(f.port, '/clickXY?target=user-page&userTab=1&x=5000&y=5000');
   assert.equal(outside.status, 400);
   assert.match(outside.body.error, /不在页面视口内/);
   assert.equal(commandsOf(await f.events(), 'Input.dispatchMouseEvent').length, 0);
-  const response = await requestJson(f.port, '/clickXY?target=user-page&x=115&y=95');
+  const response = await requestJson(f.port, '/clickXY?target=user-page&userTab=1&x=115&y=95');
   assert.deepEqual(response.body, { clicked: true, x: 115, y: 95, frameId: 'oopif-frame', crossProcess: true, depth: 1 });
   const mouse = commandsOf(await f.events(), 'Input.dispatchMouseEvent');
   assert.equal(mouse.length, 3);
@@ -560,11 +563,60 @@ test('浏览器解除子 session 后从缓存删除，下一次重新 attach，�
   const f = await fixture(t, { TEST_FRAMES: '1', TEST_DETACH_FRAME: '1' });
   const entry = f.spawn();
   const health = await f.ready(entry);
-  const first = await requestJson(f.port, '/eval?target=user-page&frame=oopif-frame', { method: 'POST', body: '1' });
+  const first = await requestJson(f.port, '/eval?target=user-page&userTab=1&frame=oopif-frame', { method: 'POST', body: '1' });
   assert.deepEqual(first.body, { value: 'frame:frame-session-1' });
-  const second = await requestJson(f.port, '/eval?target=user-page&frame=oopif-frame', { method: 'POST', body: '1' });
+  const second = await requestJson(f.port, '/eval?target=user-page&userTab=1&frame=oopif-frame', { method: 'POST', body: '1' });
   assert.deepEqual(second.body, { value: 'frame:frame-session-2' });
   assert.equal(commandsOf(await f.events(), 'Target.attachToTarget').filter(event => event.targetId === 'oopif-frame').length, 2);
+  assert.equal((await shutdown(f, health)).status, 202);
+  assert.equal((await entry.exited).code, 0);
+});
+
+test('请求来源校验：拒绝异常 Host、网页 Origin 与 Sec-Fetch-Site，Sec-Fetch-Site: none 放行', { timeout: 12000 }, async t => {
+  const f = await fixture(t);
+  const entry = f.spawn();
+  const health = await f.ready(entry);
+  const rebinding = await requestJson(f.port, '/health', { headers: { Host: 'attacker.example:4444' } });
+  assert.equal(rebinding.status, 403);
+  assert.match(rebinding.body.error, /Host/);
+  const pageOrigin = await requestJson(f.port, '/new', { method: 'POST', headers: { Origin: 'https://attacker.example' }, body: 'https://attacker.example' });
+  assert.equal(pageOrigin.status, 403);
+  assert.match(pageOrigin.body.error, /Origin/);
+  const embedded = await requestJson(f.port, '/targets', { headers: { 'Sec-Fetch-Site': 'cross-site' } });
+  assert.equal(embedded.status, 403);
+  assert.match(embedded.body.error, /Sec-Fetch-Site/);
+  assert.equal(commandsOf(await f.events(), 'Target.getTargets').length, 0);
+  const direct = await requestJson(f.port, '/health', { headers: { 'Sec-Fetch-Site': 'none' } });
+  assert.equal(direct.status, 200);
+  assert.equal((await shutdown(f, health)).status, 202);
+  assert.equal((await entry.exited).code, 0);
+});
+
+test('/eval 仅接受 POST；写操作默认限定自建 tab（userTab=1 显式确认用户 tab），/targets 标记 managed', { timeout: 12000 }, async t => {
+  const f = await fixture(t);
+  const entry = f.spawn();
+  const health = await f.ready(entry);
+  const get = await requestJson(f.port, '/eval?target=user-page&expr=alert(1)');
+  assert.equal(get.status, 400);
+  assert.match(get.body.error, /POST/);
+  const foreign = await requestJson(f.port, '/eval?target=user-page', { method: 'POST', body: 'document.title' });
+  assert.equal(foreign.status, 400);
+  assert.match(foreign.body.error, /userTab=1/);
+  const foreignClose = await requestJson(f.port, '/close?target=user-page');
+  assert.equal(foreignClose.status, 400);
+  assert.match(foreignClose.body.error, /userTab=1/);
+  const confirmed = await requestJson(f.port, '/eval?target=user-page&userTab=1', { method: 'POST', body: 'document.title' });
+  assert.equal(confirmed.status, 200);
+  assert.deepEqual((await requestJson(f.port, '/targets')).body.map(page => [page.targetId, page.managed]), [['user-page', false]]);
+  const created = await requestJson(f.port, '/new', { method: 'POST', body: 'about:blank' });
+  assert.equal(created.body.targetId, 'managed-page');
+  assert.deepEqual((await requestJson(f.port, '/targets')).body.map(page => [page.targetId, page.managed]), [
+    ['user-page', false],
+    ['managed-page', true],
+  ]);
+  assert.equal((await requestJson(f.port, '/eval?target=managed-page', { method: 'POST', body: 'document.title' })).status, 200);
+  assert.equal((await shutdown(f, health)).status, 409);
+  assert.equal((await requestJson(f.port, '/close?target=managed-page')).status, 200);
   assert.equal((await shutdown(f, health)).status, 202);
   assert.equal((await entry.exited).code, 0);
 });
