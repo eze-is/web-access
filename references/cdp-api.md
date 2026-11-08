@@ -3,9 +3,22 @@
 ## 基础信息
 
 - 地址：`http://localhost:3456`
-- 检查、复用或后台启动：`node ~/.claude/skills/web-access/scripts/check-deps.mjs`
+- 检查、复用或后台启动：`node <skill路径>/scripts/check-deps.mjs`（`<skill路径>` 换成 skill 实际安装目录；Claude Code 下即 `${CLAUDE_SKILL_DIR}`）
 - 服务持续运行，没有时长或空闲退出计时器；检查超时不会停止服务
 - 集中维护：`node <skill路径>/scripts/proxy-maintenance.mjs status|restart|stop`（Windows / macOS / Linux 相同）
+
+## 请求来源校验
+
+Proxy 只接受本机命令行客户端（curl / Node 脚本）的请求，与 Chromium DevTools WebSocket 拒绝 `Origin` 连接的防护对齐：
+
+- `Host` 必须是 `localhost:<port>` 或 `127.0.0.1:<port>`：DNS rebinding 后"同源"请求的 `Host` 是攻击者域名，不满足
+- 拒绝携带 `Origin` 的请求（curl / Node 客户端不发送它），以及 `Sec-Fetch-Site` 非 `none` 的请求（拦截 `<img>` / `<script>` 等不发送 `Origin` 的网页触发方式）
+
+不满足时返回 `403`。正常本机调用不受影响。
+
+## 写操作的目标限制
+
+写操作端点（`/eval`、`/click`、`/clickAt`、`/clickXY`、`/navigate`、`/back`、`/close`、`/setFiles`、`/scroll`、`/screenshot`）默认只接受本服务创建的 tab（`/targets` 中 `managed: true`）与已知跨进程 iframe 的 target（嵌套 iframe 以外层 `frameId` 作 target 的用法不受影响）。操作用户已打开的 tab 必须显式附加 `userTab=1`，否则返回 `400` 并提示。断线重连后自建 tab 的登记会清空，继续操作原 tab 同样需要显式确认或重新创建。`/targets`、`/info`、`/frames`、`/health` 为只读，不受此限制。
 
 ## API 端点
 
@@ -41,7 +54,7 @@ curl -s http://localhost:3456/health
 `~/.web-access/config.env` 中可选的 `WEB_ACCESS_CDP_PORT` 明确绑定 `WEB_ACCESS_BROWSER`，只用于日常浏览器的端口文件读不到（如系统权限拒绝读取）时显式指定端口；用 `--remote-debugging-port` 单独启动的调试浏览器不在支持范围内。留空使用文件发现，非空必须是十进制 `1..65535`，且 `WEB_ACCESS_BROWSER` 是有效的数据目录路径或旧值。显式映射须先核对浏览器归属；发现只检测 TCP，不建立授权握手。不同浏览器覆盖不借用此端口，离线也不回退。端口文件的 `EPERM/EACCES` 会作为权限事实报告，不能据此断言未开启调试。
 
 ### GET /targets
-列出所有已打开的页面 tab。返回数组，每项含 `targetId`、`title`、`url`。
+列出所有已打开的页面 tab。返回数组，每项含 `targetId`、`title`、`url`、`managed`（是否本服务经 `/new` 创建，用于区分用户已打开的 tab）。
 ```bash
 curl -s http://localhost:3456/targets
 ```
@@ -83,7 +96,7 @@ curl -s "http://localhost:3456/info?target=ID"
 ```
 
 ### POST /eval?target=ID
-执行 JavaScript 表达式，POST body 为 JS 代码。
+执行 JavaScript 表达式，POST body 为 JS 代码。仅接受 POST（GET 返回 `400`，表达式只经 body 传入，query 不提供执行通道）；`target` 为非本服务创建的 tab 时需显式 `userTab=1`（见「写操作的目标限制」）。
 ```bash
 curl -s -X POST "http://localhost:3456/eval?target=ID" -d 'document.title'
 ```
@@ -155,6 +168,9 @@ curl -s "http://localhost:3456/screenshot?target=ID&file=/tmp/shot.png"
 
 | 错误 | 原因 | 解决 |
 |------|------|------|
+| `403` Host / Origin / Sec-Fetch-Site 校验失败 | 请求疑似来自网页或 DNS rebinding | 用 curl / Node 客户端本机调用，`Host` 保持 `localhost:<port>` / `127.0.0.1:<port>` |
+| `该 target 不是本服务创建的标签页` | 写操作的目标是用户已打开的 tab | 确属用户要求时附加 `userTab=1`；否则改用自己的 tab |
+| `/eval 需要 POST` | 用 GET 调用 `/eval` | JS 表达式改走 POST body |
 | `尚未设置浏览器` | `WEB_ACCESS_BROWSER` 为空 | 运行 `check-deps.mjs` 完成首次配置 |
 | `…的浏览器 <显示名>（<数据目录>）没连上` | 浏览器未运行、远程调试开关未开启或端口已失效 | 按错误里的「Agent 处理顺序」：先打开该浏览器；仍失败请用户在地址栏打开 `chrome://inspect/#remote-debugging`（Edge 为 `edge://inspect/#remote-debugging`）勾选 Allow |
 | `配置错误 — WEB_ACCESS_BROWSER 的值无效` | 值不是绝对路径或旧值，目录不存在，或目录里没有 `Local State` | 改正配置（可用 `browser-probe.mjs` 确认路径）；不需要停止共享服务 |

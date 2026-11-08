@@ -27,6 +27,7 @@ const BROWSER_OVERRIDE = parseBrowserArg();
 const PORT = parseInt(process.env.CDP_PROXY_PORT || '3456');
 const sessions = new Map(); // targetId -> sessionId
 const managedTabs = new Map(); // targetId -> { lastAccessed: number }
+const knownFrameTargets = new Set(); // 跨进程 iframe 的 targetId（type=iframe），只经 page-frames 流程 attach 后登记
 const TAB_IDLE_TIMEOUT = parseInt(process.env.CDP_TAB_IDLE_TIMEOUT || '900000'); // 15 min default
 const CLEANUP_INTERVAL = 60000; // sweep every 60s
 const INSTANCE_ID = randomUUID();
@@ -115,6 +116,7 @@ const connection = createCdpConnection({
     sessions.clear();
     managedTabs.clear();
     portGuardedSessions.clear();
+    knownFrameTargets.clear();
     lifecycleLog(`连接已失效：${error.message}`);
   },
   onDiagnostic: (error) => lifecycleLog(`连接诊断：${error.message}`),
@@ -122,6 +124,8 @@ const connection = createCdpConnection({
     if (msg.method === 'Target.attachedToTarget') {
       const { sessionId, targetInfo } = msg.params;
       sessions.set(targetInfo.targetId, sessionId);
+      // 跨进程 iframe 的 target 只经 page-frames 流程 attach；登记后可作为 /eval 的 target（嵌套 iframe 用法）
+      if (targetInfo.type === 'iframe') knownFrameTargets.add(targetInfo.targetId);
     }
     // 标签页关闭、跨进程 iframe 换进程或被移除时，浏览器解除对应 session；从缓存删除，下次使用时重新 attach。
     if (msg.method === 'Target.detachedFromTarget') {
@@ -249,14 +253,67 @@ async function readBody(req) {
   return body;
 }
 
+// --- 请求来源校验：只接受本机命令行客户端 ---
+// 与 Chromium DevTools WebSocket 的防护对齐（其拒绝携带 Origin 的连接，网页 JS 连不上 CDP）：
+//   - Host 必须在白名单：DNS rebinding 后"同源"请求的 Host 是攻击者域名，不在其中
+//   - 带 Origin 的请求一律拒绝：curl / Node 客户端不发送 Origin，它只出现在网页发起的请求里
+//   - Sec-Fetch-Site 非 none 的请求拒绝：拦截 <img>/<script> 等不发送 Origin 的嵌入资源式请求
+//     （现代浏览器对所有请求附带 Sec-Fetch-*，none 表示地址栏或命令行直连）
+const ALLOWED_HOSTS = new Set(
+  (PORT === 80 ? ['localhost', '127.0.0.1', '[::1]'] : []).concat(
+    ['localhost', '127.0.0.1', '[::1]'].map((name) => `${name}:${PORT}`),
+  ),
+);
+
+function rejectForeignSource(req, res) {
+  const host = String(req.headers.host || '').toLowerCase();
+  if (!ALLOWED_HOSTS.has(host)) {
+    res.statusCode = 403;
+    res.end(JSON.stringify({
+      error: `Host 不在允许列表（收到 ${host || '空'}），疑似 DNS rebinding；仅接受 localhost:${PORT} / 127.0.0.1:${PORT} 的本机请求`,
+    }));
+    return true;
+  }
+  if (req.headers.origin !== undefined) {
+    res.statusCode = 403;
+    res.end(JSON.stringify({ error: '拒绝携带 Origin 的请求：Proxy 只服务本机命令行客户端，不接收网页发起的请求' }));
+    return true;
+  }
+  const fetchSite = req.headers['sec-fetch-site'];
+  if (typeof fetchSite === 'string' && fetchSite !== 'none') {
+    res.statusCode = 403;
+    res.end(JSON.stringify({ error: `拒绝 Sec-Fetch-Site: ${fetchSite} 的请求：Proxy 不接收网页发起的请求` }));
+    return true;
+  }
+  return false;
+}
+
+// --- 写操作的目标校验 ---
+// 默认只操作本服务创建的标签页（managedTabs），把 SKILL.md「不经用户要求不动用户 tab」从指令约束
+// 变成代码保证；已知 frame（见 Target.attachedToTarget）放行，嵌套 iframe 以外层 frameId 作 target
+// 的用法不受影响。操作用户已打开的 tab 必须显式附加 userTab=1。
+function rejectForeignTarget(q, res) {
+  if (q.target === undefined) {
+    res.statusCode = 400;
+    res.end(JSON.stringify({ error: '需要 target' }));
+    return true;
+  }
+  if (q.userTab === '1' || managedTabs.has(q.target) || knownFrameTargets.has(q.target)) return false;
+  res.statusCode = 400;
+  res.end(JSON.stringify({
+    error: '该 target 不是本服务创建的标签页。操作用户已打开的 tab 需显式确认：附加 userTab=1，并确认这是用户要求的操作（断线重连后自建 tab 的登记会清空，同样需显式确认或重新创建）',
+  }));
+  return true;
+}
+
 // --- HTTP API ---
 const server = http.createServer(async (req, res) => {
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  if (rejectForeignSource(req, res)) return;
   const parsed = new URL(req.url, `http://localhost:${PORT}`);
   const pathname = parsed.pathname;
   const q = Object.fromEntries(parsed.searchParams);
   if (q.target) touchTab(q.target);
-
-  res.setHeader('Content-Type', 'application/json; charset=utf-8');
 
   let operationActive = false;
   try {
@@ -325,10 +382,12 @@ const server = http.createServer(async (req, res) => {
 
     await connect();
 
-    // GET /targets - 列出所有页面
+    // GET /targets - 列出所有页面（managed 标记是否本服务创建，供区分用户 tab）
     if (pathname === '/targets') {
       const resp = await sendCDP('Target.getTargets');
-      const pages = resp.result.targetInfos.filter(t => t.type === 'page');
+      const pages = resp.result.targetInfos
+        .filter(t => t.type === 'page')
+        .map(t => ({ ...t, managed: managedTabs.has(t.targetId) }));
       res.end(JSON.stringify(pages, null, 2));
     }
 
@@ -363,8 +422,9 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ targetId }));
     }
 
-    // GET /close?target=xxx - 关闭 tab
+    // GET /close?target=xxx - 关闭 tab（仅限自建 tab；用户 tab 需 userTab=1 显式确认）
     else if (pathname === '/close') {
+      if (rejectForeignTarget(q, res)) return;
       const resp = await sendCDP('Target.closeTarget', { targetId: q.target });
       sessions.delete(q.target);
       managedTabs.delete(q.target);
@@ -383,6 +443,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const targetUrl = (await readBody(req)).trim();
+      if (rejectForeignTarget(q, res)) return;
       const sid = await ensureSession(q.target);
       const resp = await sendCDP('Page.navigate', { url: targetUrl }, sid);
 
@@ -394,6 +455,7 @@ const server = http.createServer(async (req, res) => {
 
     // GET /back?target=xxx - 后退
     else if (pathname === '/back') {
+      if (rejectForeignTarget(q, res)) return;
       const sid = await ensureSession(q.target);
       await sendCDP('Runtime.evaluate', { expression: 'history.back()' }, sid);
       await waitForLoad(sid);
@@ -411,13 +473,23 @@ const server = http.createServer(async (req, res) => {
     }
 
     // POST /eval?target=xxx[&frame=frameId] - 执行 JS；带 frame 时在该 iframe 中执行（frameId 取自 /frames）
+    // 仅接受 POST：表达式只经 body 传入，不给 query 留执行通道
     else if (pathname === '/eval') {
+      if (req.method !== 'POST') {
+        res.statusCode = 400;
+        res.end(JSON.stringify({
+          error: '/eval 需要 POST，JS 表达式通过 body 传入',
+          example: "curl -X POST \"http://localhost:3456/eval?target=ID\" -d 'document.title'",
+        }));
+        return;
+      }
+      if (rejectForeignTarget(q, res)) return;
       let sid;
       let contextId;
       if (q.frame !== undefined) ({ sessionId: sid, contextId } = await pageFrames.frameContext(q.target, q.frame));
       else sid = await ensureSession(q.target);
       const body = await readBody(req);
-      const expr = body || q.expr || 'document.title';
+      const expr = body.trim() || 'document.title';
       const resp = await sendCDP('Runtime.evaluate', {
         expression: expr,
         returnByValue: true,
@@ -446,6 +518,7 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ error: '需要 target，以及有限的非负 x、y 视口坐标' }));
         return;
       }
+      if (rejectForeignTarget(q, res)) return;
       const route = await pageFrames.routePoint(q.target, x, y);
       for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
         const resp = await sendCDP('Input.dispatchMouseEvent', {
@@ -465,6 +538,7 @@ const server = http.createServer(async (req, res) => {
     // POST /click?target=xxx - 点击（body 为 CSS 选择器）
     // POST /click?target=xxx — JS 层面点击（简单快速，覆盖大多数场景）
     else if (pathname === '/click') {
+      if (rejectForeignTarget(q, res)) return;
       const sid = await ensureSession(q.target);
       const selector = await readBody(req);
       if (!selector) {
@@ -500,6 +574,7 @@ const server = http.createServer(async (req, res) => {
 
     // POST /clickAt?target=xxx — CDP 浏览器级真实鼠标点击（算用户手势，能触发文件对话框、绕过反自动化检测）
     else if (pathname === '/clickAt') {
+      if (rejectForeignTarget(q, res)) return;
       const sid = await ensureSession(q.target);
       const selector = await readBody(req);
       if (!selector) {
@@ -538,6 +613,7 @@ const server = http.createServer(async (req, res) => {
     // POST /setFiles?target=xxx — 给 file input 设置本地文件（绕过文件对话框）
     // body: JSON { "selector": "input[type=file]", "files": ["/path/to/file1.png", "/path/to/file2.png"] }
     else if (pathname === '/setFiles') {
+      if (rejectForeignTarget(q, res)) return;
       const sid = await ensureSession(q.target);
       const body = JSON.parse(await readBody(req));
       if (!body.selector || !body.files) {
@@ -567,6 +643,7 @@ const server = http.createServer(async (req, res) => {
 
     // GET /scroll?target=xxx&y=3000 - 滚动
     else if (pathname === '/scroll') {
+      if (rejectForeignTarget(q, res)) return;
       const sid = await ensureSession(q.target);
       const y = parseInt(q.y || '3000');
       const direction = q.direction || 'down'; // down | up | top | bottom
@@ -591,6 +668,7 @@ const server = http.createServer(async (req, res) => {
 
     // GET /screenshot?target=xxx&file=/tmp/x.png - 截图
     else if (pathname === '/screenshot') {
+      if (rejectForeignTarget(q, res)) return;
       const sid = await ensureSession(q.target);
       const format = q.format || 'png';
       const resp = await sendCDP('Page.captureScreenshot', {
@@ -629,7 +707,7 @@ const server = http.createServer(async (req, res) => {
           '/back?target=': 'GET - 后退',
           '/info?target=': 'GET - 页面标题/URL/状态',
           '/frames?target=': 'GET - 列出页面中的 iframe（frameId、网址、是否跨进程）',
-          '/eval?target=&frame=': 'POST body=JS表达式 - 执行 JS（frame 可选，取自 /frames）',
+          '/eval?target=&frame=': 'POST body=JS表达式 - 执行 JS（frame 可选，取自 /frames；操作非自建 tab 需 userTab=1）',
           '/click?target=': 'POST body=CSS选择器 - 点击元素',
           '/clickAt?target=': 'POST body=CSS选择器 - 真实鼠标点击',
           '/clickXY?target=&x=&y=': 'GET - 按视口坐标真实鼠标点击（可点中跨进程 iframe）',

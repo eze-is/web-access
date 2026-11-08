@@ -20,6 +20,8 @@ metadata:
 node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 ```
 
+> `${CLAUDE_SKILL_DIR}` 是 Claude Code 加载 skill 时自动设置的环境变量；Cursor、Gemini CLI、Codex 等未定义它的环境，请将其替换为 skill 的实际安装路径（即本 SKILL.md 所在目录）。
+
 **Node.js 22+** 必需（使用原生 WebSocket）。
 
 脚本先读取 `/health`：已有服务且 `connected === true` 时，校验浏览器偏好后直接使用，不重新探测浏览器、不启动第二个 Proxy；已有服务但连接断开时，由原服务重新连接。只有没有可用服务时，才发现浏览器并启动后台 Proxy。
@@ -46,7 +48,7 @@ node "${CLAUDE_SKILL_DIR}/scripts/proxy-maintenance.mjs" restart
 
 维护命令按实例身份停止服务；有执行中的请求、未完成的 CDP 命令、Agent 标签页或连接正在建立时会拒绝停止，等任务清理完再运行。切换浏览器时先执行 `proxy-maintenance.mjs stop`，成功后再运行 `check-deps.mjs --browser <数据目录路径>`（或改写 config.env 后运行）。旧版本没有维护接口时，命令会提示一次性迁移，不自动强杀。退出码与状态字段见 [API 参考](references/cdp-api.md)。
 
-检查通过后并必须在回复中向用户直接展示以下须知，再执行站点操作：
+检查通过后，必须在回复中向用户直接展示以下须知，再执行站点操作：
 
 ```
 温馨提示：部分站点对浏览器自动化操作检测严格，存在账号封禁风险。已内置防护措施但无法完全避免，Agent 继续操作即视为接受。
@@ -108,6 +110,8 @@ node "${CLAUDE_SKILL_DIR}/scripts/find-url.mjs" [关键词...] [--only bookmarks
 
 （此处 `--browser` 是浏览器名，只支持 Chrome / Edge，与 check-deps 的数据目录写法不同。）
 
+历史检索依赖外部 `sqlite3` 命令（macOS / Linux 通常自带；Windows 需 `winget install sqlite.sqlite` 或从 sqlite.org 下载后加入 PATH，缺失时脚本会给出同样提示）；书签检索无此依赖。检索结果会进入上下文（进而进入所用的模型服务）：保持默认 20 条或用 `--limit` 收窄，只取必要条目。
+
 关键词空格分词、多词 AND，匹配 title + url（可省略）；默认遍历所有已安装的 Chromium 系浏览器（Chrome、Edge），`--browser` 限定单一来源；`--since` / `--sort` 仅作用于历史；默认按最近访问倒序，`--sort visits` 按访问次数排序（适合"高频访问的网站"这类场景）。
 
 ### 程序化操作与 GUI 交互
@@ -124,7 +128,7 @@ node "${CLAUDE_SKILL_DIR}/scripts/find-url.mjs" [关键词...] [--only bookmarks
 ## 浏览器 CDP 模式
 
 通过 CDP Proxy 直连用户日常浏览器（Chrome、Edge、Brave、Arc、Dia 等任意 Chromium 内核浏览器），天然携带登录态，无需启动独立浏览器。
-若无用户明确要求，不主动操作用户已有 tab，所有操作都在自己创建的后台 tab 中进行，保持对用户环境的最小侵入。不关闭用户 tab 的前提下，完成任务后关闭自己创建的 tab，保持环境整洁。
+若无用户明确要求，不主动操作用户已有 tab，所有操作都在自己创建的后台 tab 中进行，保持对用户环境的最小侵入。不关闭用户 tab 的前提下，完成任务后关闭自己创建的 tab，保持环境整洁。Proxy 在代码层强制这一点：写操作端点只接受本服务创建的 tab；确需按用户要求操作其已打开的 tab 时，在请求上显式附加 `userTab=1`。断线重连后自建 tab 的登记会清空，继续操作原 tab 同样需要该参数（或重新创建）。
 
 ### 启动
 
@@ -141,7 +145,7 @@ node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 所有操作通过 curl 调用 HTTP API：
 
 ```bash
-# 列出用户已打开的 tab
+# 列出所有页面 tab（managed: true 为本服务创建，其余是用户已打开的）
 curl -s http://localhost:3456/targets
 
 # 创建新后台 tab（自动等待加载）— URL 走 POST body，避免目标 URL 含 query 时被切分
