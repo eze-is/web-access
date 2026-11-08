@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
@@ -113,7 +113,7 @@ if (process.env.TEST_EPIPE_HEALTH) {
   return {
     events,
     async run(port, args = [], startMode = 'connected', extraEnv = {}) {
-      const child = spawn(process.execPath, ['--import', preload, path.join(scripts, 'proxy-maintenance.mjs'), ...args], {
+      const child = spawn(process.execPath, ['--import', pathToFileURL(preload).href, path.join(scripts, 'proxy-maintenance.mjs'), ...args], {
         env: {
           ...process.env, ...extraEnv, CDP_PROXY_PORT: String(port), TEST_EVENTS_PATH: eventsPath, TEST_START_MODE: startMode,
           HOME: root, USERPROFILE: root, LOCALAPPDATA: path.join(root, 'AppData', 'Local'),

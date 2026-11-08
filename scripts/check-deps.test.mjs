@@ -4,10 +4,15 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
+
+// Windows 无开发者模式时创建软链接需要特权；目录链接改用 junction（无需特权，realpath 语义相同，目标须绝对路径）
+const linkDir = (target, link) => process.platform === 'win32'
+  ? fs.symlink(path.resolve(path.dirname(link), target), link, 'junction')
+  : fs.symlink(target, link);
 
 // 旧配置值在当前宿主平台的标准数据目录（与 browser-discovery 的兼容映射一致，用于断言路径身份）
 function legacyDataDir(f, alias) {
@@ -116,7 +121,7 @@ globalThis.setTimeout = (callback, delay, ...args) => originalSetTimeout(callbac
     configPath,
     events,
     async run(port, args = [], extraEnv = {}) {
-      const child = spawn(process.execPath, ['--import', preload, path.join(scripts, 'check-deps.mjs'), ...args], {
+      const child = spawn(process.execPath, ['--import', pathToFileURL(preload).href, path.join(scripts, 'check-deps.mjs'), ...args], {
         env: {
           ...process.env,
           CDP_PROXY_PORT: String(port),
@@ -484,7 +489,7 @@ test('经软链接写的数据目录与运行实例报告的真实路径视为�
   const f = await fixture(t);
   const link = path.join(f.root, 'links', 'chrome');
   await fs.mkdir(path.dirname(link), { recursive: true });
-  await fs.symlink(legacyDataDir(f, 'chrome'), link);
+  await linkDir(legacyDataDir(f, 'chrome'), link);
   await fs.writeFile(f.configPath, `WEB_ACCESS_BROWSER=${link}\n`);
   const proxy = await fakeProxy(t, { browser: legacyDataDir(f, 'chrome') });
   success(await f.run(proxy.port));

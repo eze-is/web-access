@@ -250,7 +250,9 @@ async function main() {
     try { validateBrowser(browserId); }
     catch (error) {
       printConfigError(`${opts.browser ? '--browser' : 'WEB_ACCESS_BROWSER'} 的值无效：${error.message}`, { browserValue: true });
-      process.exit(1);
+      // 不用 process.exit 立即退出：Windows 上 keep-alive socket 尚未关闭时强退会触发 libuv 断言崩溃
+      process.exitCode = 1;
+      return;
     }
   }
 
@@ -258,12 +260,12 @@ async function main() {
   const health = await httpGetJson(HEALTH_URL);
   if (health?.status !== 'ok') {
     const resolved = await resolveAndReport(opts.browser);
-    if (!resolved.proceed) process.exit(resolved.exitCode);
+    if (!resolved.proceed) { process.exitCode = resolved.exitCode; return; }
     browserId = resolved.browserId;
   }
 
   const proxyOk = await ensureProxy(browserId, opts.browser, health);
-  if (!proxyOk) process.exit(1);
+  if (!proxyOk) { process.exitCode = 1; return; }
 
   // 列出已有站点经验，附目录路径供 Agent 读写
   let sites = [];

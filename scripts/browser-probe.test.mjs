@@ -4,10 +4,15 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
+
+// Windows 无开发者模式时创建软链接需要特权；目录链接改用 junction（无需特权，realpath 语义相同，目标须绝对路径）
+const linkDir = (target, link) => process.platform === 'win32'
+  ? fs.symlink(path.resolve(path.dirname(link), target), link, 'junction')
+  : fs.symlink(target, link);
 
 // 平台与 HOME 在子进程内模拟；应用数据目录、浏览器数据目录都是临时树，端口为随机本机端口。
 // 子进程记录目录列举、文件读取与 TCP 连接，用来证明「只列根目录本身」「不读浏览器数据内容」「只做 TCP」。
@@ -58,7 +63,7 @@ async function fixture(t, { platform = 'darwin' } = {}) {
 
   const exec = async (args, options = {}) => {
     const recordPath = path.join(root, `record-${Math.random().toString(36).slice(2)}.json`);
-    const child = spawn(process.execPath, ['--import', path.join(root, 'preload.mjs'), ...args], {
+    const child = spawn(process.execPath, ['--import', pathToFileURL(path.join(root, 'preload.mjs')).href, ...args], {
       env: {
         ...process.env, TEST_OPTS: JSON.stringify({ platform, home, ...options }), TEST_RECORD: recordPath,
         LOCALAPPDATA: localAppData, APPDATA: appData,
@@ -211,7 +216,7 @@ test('文件夹参数：在应用数据根目录下查找，支持多级相对�
 test('探测范围由代码限定：拒绝 ~、.. 越界、根目录本身、根目录外的绝对路径与软链接逃逸，且不列举任何目录', async t => {
   const f = await fixture(t);
   await f.browser(path.join(f.home, 'Documents'), 'proj/fakebrowser');
-  await fs.symlink(path.join(f.home, 'Documents'), path.join(f.appRoot, 'LinkOut'));
+  await linkDir(path.join(f.home, 'Documents'), path.join(f.appRoot, 'LinkOut'));
   const cases = [
     ['~', /不接受 ~/],
     ['~/Documents', /不接受 ~/],
@@ -341,9 +346,9 @@ test('Linux snap：经同根目录内的 current 软链接探测被允许，输�
   const f = await fixture(t, { platform: 'linux' });
   const snap = path.join(f.home, 'snap');
   await f.browser(snap, 'brave/123/.config/BraveSoftware/Brave-Browser');
-  await fs.symlink('123', path.join(snap, 'brave', 'current'));
+  await linkDir('123', path.join(snap, 'brave', 'current'));
   await fs.mkdir(path.join(f.home, 'Documents'), { recursive: true });
-  await fs.symlink(path.join(f.home, 'Documents'), path.join(snap, 'evil'));
+  await linkDir(path.join(f.home, 'Documents'), path.join(snap, 'evil'));
 
   const viaCurrent = await f.cli('brave/current/.config');
   assert.equal(viaCurrent.code, 0, viaCurrent.stdout + viaCurrent.stderr);

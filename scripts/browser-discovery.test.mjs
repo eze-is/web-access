@@ -4,10 +4,15 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
+
+// Windows 无开发者模式时创建软链接需要特权；目录链接改用 junction（无需特权，realpath 语义相同，目标须绝对路径）
+const linkDir = (target, link) => process.platform === 'win32'
+  ? fs.symlink(path.resolve(path.dirname(link), target), link, 'junction')
+  : fs.symlink(target, link);
 
 // 操作系统分支在子进程内模拟；真实文件/TCP 均位于临时树与随机端口，不读取真实 HOME，也不探测任何固定端口。
 // 子进程记录：TCP 连接次数、DevToolsActivePort 读取、目录列举，用来证明「只读所选目录、只做 TCP」。
@@ -89,7 +94,7 @@ async function fixture(t, { platform = 'darwin', config = '' } = {}) {
   const run = async (action = 'select', extra = {}) => {
     const { env: extraEnv = {}, ...rest } = extra;
     const options = { action, platform, home, ...rest };
-    const child = spawn(process.execPath, ['--import', path.join(root, 'preload.mjs'), path.join(root, 'runner.mjs')], {
+    const child = spawn(process.execPath, ['--import', pathToFileURL(path.join(root, 'preload.mjs')).href, path.join(root, 'runner.mjs')], {
       env: {
         ...process.env, TEST_OPTS: JSON.stringify(options),
         LOCALAPPDATA: localAppData, APPDATA: appData, WEB_ACCESS_BROWSER: 'chrome', ...extraEnv,
@@ -360,7 +365,7 @@ test('身份按真实路径规范化：软链接与大小写不同的写法指�
   const dia = await f.dataDir(DIA);
   const link = path.join(f.home, 'links', 'dia');
   await fs.mkdir(path.dirname(link), { recursive: true });
-  await fs.symlink(dia, link);
+  await linkDir(dia, link);
   assert.equal((await f.run('resolve', { value: link })).result.id, dia);
   assert.equal((await f.run('same', { a: link, b: `~/${DIA}` })).result, true);
   // 大小写不敏感的文件系统（macOS 默认 APFS、Windows）上，不同大小写写法也归一
