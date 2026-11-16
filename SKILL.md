@@ -82,11 +82,7 @@ node "<skill-dir>/scripts/find-url.mjs" [关键词...] [--only bookmarks|history
 
 ## 浏览器 CDP 模式
 
-通过 CDP Proxy 直连 Chromium 系浏览器并沿用登录态。`config.env` 设 `WEB_ACCESS_BROWSER=agent` 时连的是 Agent 专用 Chrome（`agent-chrome`，后台无界面、带日常 Chrome 的登录态、连接不弹窗、没在跑会自动拉起），不碰用户正在用的浏览器。仅在进入 CDP 执行时，先向用户展示中性提示：
-
-> 提示：浏览器自动化可能触发部分站点的风控并带来账号受限风险，内置措施无法完全消除此风险。
-
-再运行前置检查（需要 Node.js 22+）：
+通过 CDP Proxy 直连 Chromium 系浏览器并沿用登录态。`config.env` 设 `WEB_ACCESS_BROWSER=agent` 时连的是 Agent 专用 Chrome（`agent-chrome`，后台无界面、带日常 Chrome 的登录态、连接不弹窗、没在跑会自动拉起），不碰用户正在用的浏览器。运行前置检查（需要 Node.js 22+）：
 
 ```bash
 node "<skill-dir>/scripts/check-deps.mjs"
