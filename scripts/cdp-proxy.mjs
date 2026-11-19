@@ -10,8 +10,9 @@ import path from 'node:path';
 import os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { createCdpConnection } from './cdp-connection.mjs';
-import { selectBrowser, explainUnavailable } from './browser-discovery.mjs';
+import { selectBrowser, explainUnavailable, readConfig } from './browser-discovery.mjs';
 import { createPageFrames, FrameError } from './page-frames.mjs';
+import { resolveProxyEndpoint, isLocalAddress } from './proxy-endpoint.mjs';
 
 // --- 解析命令行 --browser 参数（本次启动用哪个浏览器）---
 function parseBrowserArg() {
@@ -24,7 +25,14 @@ function parseBrowserArg() {
 }
 const BROWSER_OVERRIDE = parseBrowserArg();
 
-const PORT = parseInt(process.env.CDP_PROXY_PORT || '3456');
+let ENDPOINT;
+try {
+  ENDPOINT = resolveProxyEndpoint(readConfig());
+} catch (error) {
+  console.error(`[CDP Proxy] 配置错误：${error.message}`);
+  process.exit(1);
+}
+const { host: HOST, port: PORT, authority: LOCAL_AUTHORITY } = ENDPOINT;
 const sessions = new Map(); // targetId -> sessionId
 const managedTabs = new Map(); // targetId -> { lastAccessed: number }
 const TAB_IDLE_TIMEOUT = parseInt(process.env.CDP_TAB_IDLE_TIMEOUT || '900000'); // 15 min default
@@ -34,6 +42,7 @@ const STARTED_AT = new Date().toISOString();
 const RUNNING_REVISION = createHash('sha256')
   .update(fs.readFileSync(new URL(import.meta.url)))
   .update(fs.readFileSync(new URL('./cdp-connection.mjs', import.meta.url)))
+  .update(fs.readFileSync(new URL('./proxy-endpoint.mjs', import.meta.url)))
   .digest('hex').slice(0, 12);
 let activeRequests = 0;
 let maintenance = false;
@@ -263,6 +272,7 @@ const server = http.createServer(async (req, res) => {
     // /health 不需要连接浏览器
     if (pathname === '/health') {
       const connected = connection.connected;
+      const bind = HOST === '0.0.0.0' || HOST === '::' ? 'localhost / LAN IP' : HOST;
       res.end(JSON.stringify({
         status: 'ok',
         connected,
@@ -270,6 +280,7 @@ const server = http.createServer(async (req, res) => {
         sessions: sessions.size,
         managedTabs: managedTabs.size,
         chromePort,
+        proxy: { host: HOST, port: PORT, bind },
         pid: process.pid,
         instanceId: INSTANCE_ID,
         startedAt: STARTED_AT,
@@ -285,7 +296,7 @@ const server = http.createServer(async (req, res) => {
 
     // 维护由明确的本机命令触发；普通浏览器页面不能请求关闭共享服务。
     if (pathname === '/shutdown') {
-      if (req.method !== 'POST' || req.headers.origin) {
+      if (req.method !== 'POST' || req.headers.origin || !isLocalAddress(req.socket.remoteAddress)) {
         res.statusCode = 403;
         res.end(JSON.stringify({ error: '请使用本机维护命令' }));
         return;
@@ -653,7 +664,7 @@ async function main() {
   try {
     await new Promise((resolve, reject) => {
       server.once('error', reject);
-      server.listen(PORT, '127.0.0.1', () => {
+      server.listen(PORT, HOST, () => {
         server.removeListener('error', reject);
         resolve();
       });
@@ -662,7 +673,7 @@ async function main() {
     if (error.code === 'EADDRINUSE') {
       let existing;
       try {
-        const response = await fetch(`http://127.0.0.1:${PORT}/health`, { signal: AbortSignal.timeout(2000) });
+        const response = await fetch(`http://${LOCAL_AUTHORITY}:${PORT}/health`, { signal: AbortSignal.timeout(2000) });
         if (response.ok) existing = await response.json();
       } catch { /* 无法确认占用者时明确失败，不连接浏览器。 */ }
       if (existing?.status === 'ok') {
@@ -672,7 +683,10 @@ async function main() {
     }
     throw error;
   }
-  lifecycleLog(`运行在 http://127.0.0.1:${PORT}，revision=${RUNNING_REVISION}`);
+  const bindDesc = HOST === '0.0.0.0' || HOST === '::'
+    ? `http://localhost:${PORT}（局域网可通过 http://<本机局域网IP>:${PORT} 访问）`
+    : `http://${HOST.includes(':') ? `[${HOST}]` : HOST}:${PORT}`;
+  lifecycleLog(`运行在 ${bindDesc}，revision=${RUNNING_REVISION}`);
   cleanupTimer = setInterval(cleanupIdleTabs, CLEANUP_INTERVAL);
   cleanupTimer.unref();
   process.on('SIGINT', () => { void shutdown('SIGINT'); });

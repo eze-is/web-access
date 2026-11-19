@@ -181,11 +181,28 @@ skill 长期偏好保存在 `~/.web-access/config.env`（Windows 为 `%USERPROFI
 WEB_ACCESS_BROWSER=~/Library/Application Support/Dia/User Data
 # Windows 例：%LOCALAPPDATA%\Google\Chrome\User Data；Linux 例：~/.config/google-chrome
 # 旧值 chrome / chrome-canary / chromium / edge 仍可用，按平台对应到标准目录
+
+# CDP Proxy 监听设置（有浏览器的机器）
+# 默认只监听本机；需要局域网访问时显式改成 0.0.0.0
+CDP_PROXY_HOST=127.0.0.1
+CDP_PROXY_PORT=3456
+
+# 远端 CDP Proxy（无浏览器的机器）
+# 填有浏览器机器的局域网地址；留空则使用本机浏览器
+CDP_PROXY_BASE_URL=http://192.168.1.10:3456
 ```
 
 一般不用手填：留空、且没有可复用的共享服务时，Agent 运行前置检查会进入首次配置——列出应用数据目录（macOS `~/Library/Application Support`、Windows `%LOCALAPPDATA%` 与 `%APPDATA%`、Linux `~/.config`，以及 snap 的 `~/snap`、flatpak 的 `~/.var/app`）里的文件夹名（snap 浏览器的数据目录在带修订号的子目录里，探测时写 `brave/current/.config` 这类经 `current` 的相对路径，配置随 snap 升级仍有效），从中认出浏览器，用 `scripts/browser-probe.mjs` 只在认出的文件夹里确认数据目录和远程调试状态（探测范围由脚本限定在应用数据目录内），问你用哪个后写入。日常运行只读所配置目录里的端口文件；连不上就报错并给出处理步骤，不会换到别的浏览器，也不会扫描固定端口。
 
 如果系统拒绝读取 `DevToolsActivePort`，可在同一配置中设置可选的 `WEB_ACCESS_CDP_PORT`。它必须与 `WEB_ACCESS_BROWSER` 配对，填入已核对属于该浏览器的端口；留空使用自动发现。TCP 可达只表示端口在监听，浏览器归属由这份明确配置提供。指定其他浏览器时不会借用此端口，端口失效也不自动降级。
+
+### 局域网 / 无浏览器机器访问
+
+有浏览器的机器默认只监听 `127.0.0.1`。需要局域网其他机器访问时，显式把 `CDP_PROXY_HOST` 改为 `0.0.0.0` 后重启 Proxy，其他机器再用 `http://<有浏览器机器IP>:3456` 调用同一套 API。`/shutdown` 只接受本机来源。
+
+无浏览器机器不需要本机安装或启动浏览器，在自己的 `~/.web-access/config.env` 设置 `CDP_PROXY_BASE_URL` 后，`check-deps.mjs` 只校验远端 `/health`，不再探测本机浏览器。后续调用把 `http://localhost:3456` 替换为该 base URL。
+
+> 安全提示：CDP Proxy 是浏览器控制 API，当前没有鉴权。只建议暴露在可信局域网 / VPN 内，并通过系统防火墙限制来源 IP；不要直接暴露到公网。
 
 **临时用别的浏览器**（不修改 config.env，取值规则同上）：
 
@@ -213,11 +230,11 @@ node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 
 多个 Agent 共用一条 CDP 连接；发现和握手期间的并发请求共用同一次连接尝试。旧连接的迟到事件无法清理新连接或结算新连接的命令。服务端口原子绑定保证同时启动的进程只有一个连接浏览器。
 
-集中维护使用 `node "${CLAUDE_SKILL_DIR}/scripts/proxy-maintenance.mjs" status|restart|stop`，Windows、macOS、Linux 均使用同一脚本，无需系统进程查杀命令。维护以 `/health` 的 `instanceId` 识别目标服务，忙碌时拒绝停止；`restart` 保留原浏览器选择。普通任务直接复用，不自行重启。维护命令输出状态 JSON，`waitingAuthorization` 表示服务已启动但浏览器连接还未确认，不是成功就绪。详见 [API 参考](references/cdp-api.md)。
+集中维护使用 `node "${CLAUDE_SKILL_DIR}/scripts/proxy-maintenance.mjs" status|restart|stop`，Windows、macOS、Linux 均使用同一脚本，无需系统进程查杀命令。维护命令只能在有浏览器的主机执行，配置了 `CDP_PROXY_BASE_URL` 的无浏览器机器会被拒绝。维护以 `/health` 的 `instanceId` 识别目标服务，忙碌时拒绝停止；`restart` 保留原浏览器选择。普通任务直接复用，不自行重启。维护命令输出状态 JSON，`waitingAuthorization` 表示服务已启动但浏览器连接还未确认，不是成功就绪。详见 [API 参考](references/cdp-api.md)。
 
 ## CDP Proxy API
 
-Proxy 通过 WebSocket 直连浏览器（兼容 `chrome://inspect` / `edge://inspect` 方式，无需命令行参数启动），提供 HTTP API：
+Proxy 通过 WebSocket 直连浏览器（兼容 `chrome://inspect` / `edge://inspect` 方式，无需命令行参数启动），提供 HTTP API。`CDP_PROXY_HOST` 是非 wildcard 地址时，本机也用该地址（IPv6 加方括号）；远端机器把下面的 `http://localhost:3456` 替换为 `CDP_PROXY_BASE_URL`：
 
 ```bash
 # 检查并复用；没有服务时才后台启动

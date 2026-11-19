@@ -8,6 +8,31 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
+
+function localIPv4() {
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const entry of entries || []) {
+      if (entry.family === 'IPv4' && !entry.internal) return entry.address;
+    }
+  }
+  return null;
+}
+
+async function ipv6LoopbackAvailable() {
+  const server = http.createServer();
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '::1', resolve);
+    });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (server.listening) await new Promise(resolve => server.close(resolve));
+  }
+}
+
 const oldHealth = {
   status: 'ok', connected: true, instanceId: 'old-instance', pid: 1234,
   startedAt: '2026-10-11T00:00:00.000Z', activeRequests: 0, managedTabs: 0,
@@ -21,7 +46,7 @@ async function fixture(t) {
   const scripts = path.join(root, 'scripts');
   const eventsPath = path.join(root, 'events.jsonl');
   await fs.mkdir(scripts);
-  for (const name of ['proxy-maintenance.mjs', 'browser-discovery.mjs', 'user-data.mjs']) {
+  for (const name of ['proxy-maintenance.mjs', 'browser-discovery.mjs', 'user-data.mjs', 'proxy-endpoint.mjs']) {
     await fs.copyFile(path.join(SCRIPTS, name), path.join(scripts, name));
   }
   await fs.writeFile(path.join(scripts, 'fake-proxy.mjs'), `
@@ -137,7 +162,7 @@ if (process.env.TEST_EPIPE_HEALTH) {
   };
 }
 
-async function fakeProxy(t, { health = oldHealth, shutdown, healthResponse, statusCode = 200, onRequest } = {}) {
+async function fakeProxy(t, { health = oldHealth, shutdown, healthResponse, statusCode = 200, onRequest, host = '127.0.0.1' } = {}) {
   const requests = [];
   const sockets = new Map(); // socket -> 连接序号，用于断言维护请求是否复用连接
   let current = { ...health };
@@ -165,7 +190,7 @@ async function fakeProxy(t, { health = oldHealth, shutdown, healthResponse, stat
       res.end(JSON.stringify({ error: error.message }));
     });
   });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  await new Promise(resolve => server.listen(0, host, resolve));
   const port = server.address().port;
   t.after(async () => {
     server.closeAllConnections();
@@ -192,6 +217,27 @@ test('status 默认只读，完整输出服务端状态', async t => {
   assert.deepEqual(await f.events(), []);
 });
 
+test('自定义监听地址时维护命令使用该地址', async t => {
+  const host = localIPv4();
+  if (!host) return t.skip('没有非回环 IPv4 地址');
+  const f = await fixture(t);
+  const proxy = await fakeProxy(t, { host });
+  const result = await f.run(proxy.port, [], 'connected', { CDP_PROXY_HOST: host });
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.output.status, 'running');
+  assert.deepEqual(proxy.requests.map(r => r.path), ['/health']);
+});
+
+test('IPv6 回环地址时维护命令使用该地址', async t => {
+  if (!(await ipv6LoopbackAvailable())) return t.skip('当前环境不支持 ::1');
+  const f = await fixture(t);
+  const proxy = await fakeProxy(t, { host: '::1' });
+  const result = await f.run(proxy.port, [], 'connected', { CDP_PROXY_HOST: '::1' });
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.output.status, 'running');
+  assert.deepEqual(proxy.requests.map(r => r.path), ['/health']);
+});
+
 test('没有服务时 status 和 stop 明确报告 stopped，不启动服务', async t => {
   const f = await fixture(t);
   const port = await unusedPort();
@@ -200,6 +246,16 @@ test('没有服务时 status 和 stop 明确报告 stopped，不启动服务', a
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.output.status, 'stopped');
   }
+  assert.deepEqual(await f.events(), []);
+});
+
+test('检测到远端 Proxy 配置时拒绝维护，避免误停本机实例', async t => {
+  const f = await fixture(t);
+  const result = await f.run(await unusedPort(), ['status'], 'connected', {
+    CDP_PROXY_BASE_URL: 'http://127.0.0.1:9',
+  });
+  assert.equal(result.code, 2, result.stderr);
+  assert.match(result.output.message, /维护命令只能在有浏览器的主机执行/);
   assert.deepEqual(await f.events(), []);
 });
 
