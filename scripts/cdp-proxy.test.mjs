@@ -10,6 +10,31 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
+
+function localIPv4() {
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const entry of entries || []) {
+      if (entry.family === 'IPv4' && !entry.internal) return entry.address;
+    }
+  }
+  return null;
+}
+
+async function ipv6LoopbackAvailable() {
+  const server = http.createServer();
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '::1', resolve);
+    });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (server.listening) await new Promise(resolve => server.close(resolve));
+  }
+}
+
 const RUNTIME = `
 import fs from 'node:fs';
 import path from 'node:path';
@@ -49,7 +74,12 @@ http.createServer = function (...args) {
   const index = args.findIndex(value => typeof value === 'function');
   if (index !== -1) {
     const listener = args[index];
-    args[index] = function (req, res) { record('request', { url: req.url }); return listener.call(this, req, res); };
+    args[index] = function (req, res) {
+      const remoteAddress = req.headers['x-test-remote-address'];
+      if (remoteAddress) Object.defineProperty(req.socket, 'remoteAddress', { value: String(remoteAddress), configurable: true });
+      record('request', { url: req.url });
+      return listener.call(this, req, res);
+    };
   }
   return originalCreateServer.apply(this, args);
 };
@@ -168,12 +198,12 @@ class FakeWebSocket extends EventTarget {
 globalThis.WebSocket = FakeWebSocket;
 `;
 
-function beginRequest(port, endpoint, { method = 'GET', body, headers = {}, deferBody = false } = {}) {
+function beginRequest(port, endpoint, { host = '127.0.0.1', method = 'GET', body, headers = {}, deferBody = false } = {}) {
   const encoded = body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body);
   let request;
   const done = new Promise((resolve, reject) => {
     request = http.request({
-      hostname: '127.0.0.1', port, path: endpoint, method, agent: false,
+      hostname: host, port, path: endpoint, method, agent: false,
       headers: { ...(encoded === undefined ? {} : { 'Content-Length': Buffer.byteLength(encoded), 'Content-Type': 'application/json' }), ...headers },
     }, res => {
       let content = '';
@@ -325,6 +355,7 @@ test('/health 提供稳定实例、运行版本与连接和占用状态', { time
   const revision = createHash('sha256')
     .update(await fsp.readFile(path.join(f.scripts, 'cdp-proxy.mjs')))
     .update(await fsp.readFile(path.join(f.scripts, 'cdp-connection.mjs')))
+    .update(await fsp.readFile(path.join(f.scripts, 'proxy-endpoint.mjs')))
     .digest('hex').slice(0, 12);
   assert.match(health.instanceId, /^[0-9a-f-]{36}$/);
   assert.equal(health.runningRevision, revision);
@@ -357,6 +388,47 @@ test('/shutdown 拒绝 GET、Origin、非法 JSON 与不匹配实例，空闲后
   const response = await shutdown(f, health);
   assert.equal(response.status, 202);
   assert.equal(response.body.status, 'stopping');
+  assert.equal((await entry.exited).code, 0);
+});
+
+test('/shutdown 拒绝非本机来源，服务保持运行', { timeout: 12000 }, async t => {
+  const f = await fixture(t);
+  const entry = f.spawn();
+  const health = await f.ready(entry);
+  const response = await requestJson(f.port, '/shutdown', {
+    method: 'POST',
+    headers: { 'x-test-remote-address': '192.168.1.50' },
+    body: { instanceId: health.instanceId },
+  });
+  assert.equal(response.status, 403);
+  assert.equal((await requestJson(f.port, '/health')).body.maintenance, false);
+  assert.equal((await shutdown(f, health)).status, 202);
+  assert.equal((await entry.exited).code, 0);
+});
+
+test('自定义监听地址可启动、健康检查并维护', { timeout: 12000 }, async t => {
+  const host = localIPv4();
+  if (!host) return t.skip('没有非回环 IPv4 地址');
+  const f = await fixture(t, { CDP_PROXY_HOST: host });
+  const entry = f.spawn();
+  await f.waitEvent(events => events.find(event => event.action === 'opened' && event.pid === entry.child.pid));
+  const health = (await requestJson(f.port, '/health', { host })).body;
+  assert.equal(health.proxy.host, host);
+  assert.equal(health.proxy.bind, host);
+  const response = await requestJson(f.port, '/shutdown', { host, method: 'POST', body: { instanceId: health.instanceId } });
+  assert.equal(response.status, 202);
+  assert.equal((await entry.exited).code, 0);
+});
+
+test('IPv6 回环监听与健康检查可用', { timeout: 12000 }, async t => {
+  if (!(await ipv6LoopbackAvailable())) return t.skip('当前环境不支持 ::1');
+  const f = await fixture(t, { CDP_PROXY_HOST: '::1' });
+  const entry = f.spawn();
+  await f.waitEvent(events => events.find(event => event.action === 'opened' && event.pid === entry.child.pid));
+  const health = (await requestJson(f.port, '/health', { host: '::1' })).body;
+  assert.equal(health.proxy.host, '::1');
+  const response = await requestJson(f.port, '/shutdown', { host: '::1', method: 'POST', body: { instanceId: health.instanceId } });
+  assert.equal(response.status, 202);
   assert.equal((await entry.exited).code, 0);
 });
 

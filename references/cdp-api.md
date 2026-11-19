@@ -20,7 +20,7 @@ curl -s http://localhost:3456/health
 | `instanceId` / `pid` / `startedAt` | 当前服务实例身份、进程号和启动时间 |
 | `browser.id` / `browser.label` | 浏览器身份 = 规范化后的用户数据目录绝对路径；`label` 是取自目录名的显示名，只用于展示。升级前的实例可能报告旧值（如 `chrome`），维护与前置检查把它与对应标准路径视为同一浏览器 |
 | `browser.source` | 浏览器选择来源（偏好或临时覆盖），不是端口进程身份的自动验证 |
-| `runningRevision` | 启动时加载的 Proxy 与连接模块源码指纹，文件修改不会自动重启服务 |
+| `runningRevision` | 启动时加载的 Proxy、连接与端点模块源码指纹，文件修改不会自动重启服务 |
 | `connectionState` | `disconnected` → `discovering` → `connecting` → `connected`；失败退回 `disconnected` |
 | `connectionAttempts` | 当前实例累计的连接尝试次数；并发等待不会增加次数 |
 | `pendingCommands` | 未完成的 CDP 命令数 |

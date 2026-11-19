@@ -544,6 +544,16 @@ test('远端 Proxy 已连接时前置检查成功', async t => {
   assert.deepEqual(await f.events(), []);
 });
 
+test('远端 base URL 来自 config.env 时前置检查成功', async t => {
+  const f = await fixture(t);
+  const proxy = await fakeProxy(t);
+  await fs.writeFile(f.configPath, `CDP_PROXY_BASE_URL=http://127.0.0.1:${proxy.port}\n`);
+  const result = await f.run(null);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /remote ready/);
+  assert.deepEqual(await f.events(), []);
+});
+
 test('迁移首跑使用旧配置里的监听端口', async t => {
   const f = await fixture(t);
   await fs.rm(f.configPath);

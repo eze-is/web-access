@@ -42,6 +42,7 @@ const STARTED_AT = new Date().toISOString();
 const RUNNING_REVISION = createHash('sha256')
   .update(fs.readFileSync(new URL(import.meta.url)))
   .update(fs.readFileSync(new URL('./cdp-connection.mjs', import.meta.url)))
+  .update(fs.readFileSync(new URL('./proxy-endpoint.mjs', import.meta.url)))
   .digest('hex').slice(0, 12);
 let activeRequests = 0;
 let maintenance = false;
