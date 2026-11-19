@@ -12,6 +12,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createCdpConnection } from './cdp-connection.mjs';
 import { selectBrowser, explainUnavailable, readConfig } from './browser-discovery.mjs';
 import { createPageFrames, FrameError } from './page-frames.mjs';
+import { resolveProxyEndpoint, isLocalAddress } from './proxy-endpoint.mjs';
 
 // --- 解析命令行 --browser 参数（本次启动用哪个浏览器）---
 function parseBrowserArg() {
@@ -24,11 +25,14 @@ function parseBrowserArg() {
 }
 const BROWSER_OVERRIDE = parseBrowserArg();
 
-const PROXY_CONFIG = readConfig();
-const PORT = parseInt(process.env.CDP_PROXY_PORT || PROXY_CONFIG.CDP_PROXY_PORT || '3456');
-const HOST = process.env.CDP_PROXY_HOST || PROXY_CONFIG.CDP_PROXY_HOST || '0.0.0.0';
-const LOCAL_HOST = HOST === '0.0.0.0' || HOST === '::' ? '127.0.0.1' : HOST;
-const LOCAL_AUTHORITY = LOCAL_HOST.includes(':') ? `[${LOCAL_HOST}]` : LOCAL_HOST;
+let ENDPOINT;
+try {
+  ENDPOINT = resolveProxyEndpoint(readConfig());
+} catch (error) {
+  console.error(`[CDP Proxy] 配置错误：${error.message}`);
+  process.exit(1);
+}
+const { host: HOST, port: PORT, authority: LOCAL_AUTHORITY } = ENDPOINT;
 const sessions = new Map(); // targetId -> sessionId
 const managedTabs = new Map(); // targetId -> { lastAccessed: number }
 const TAB_IDLE_TIMEOUT = parseInt(process.env.CDP_TAB_IDLE_TIMEOUT || '900000'); // 15 min default
@@ -291,7 +295,7 @@ const server = http.createServer(async (req, res) => {
 
     // 维护由明确的本机命令触发；普通浏览器页面不能请求关闭共享服务。
     if (pathname === '/shutdown') {
-      if (req.method !== 'POST' || req.headers.origin) {
+      if (req.method !== 'POST' || req.headers.origin || !isLocalAddress(req.socket.remoteAddress)) {
         res.statusCode = 403;
         res.end(JSON.stringify({ error: '请使用本机维护命令' }));
         return;

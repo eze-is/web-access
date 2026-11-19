@@ -21,7 +21,7 @@ async function fixture(t) {
   const scripts = path.join(root, 'scripts');
   const eventsPath = path.join(root, 'events.jsonl');
   await fs.mkdir(scripts);
-  for (const name of ['proxy-maintenance.mjs', 'browser-discovery.mjs', 'user-data.mjs']) {
+  for (const name of ['proxy-maintenance.mjs', 'browser-discovery.mjs', 'user-data.mjs', 'proxy-endpoint.mjs']) {
     await fs.copyFile(path.join(SCRIPTS, name), path.join(scripts, name));
   }
   await fs.writeFile(path.join(scripts, 'fake-proxy.mjs'), `
@@ -200,6 +200,16 @@ test('没有服务时 status 和 stop 明确报告 stopped，不启动服务', a
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.output.status, 'stopped');
   }
+  assert.deepEqual(await f.events(), []);
+});
+
+test('检测到远端 Proxy 配置时拒绝维护，避免误停本机实例', async t => {
+  const f = await fixture(t);
+  const result = await f.run(await unusedPort(), ['status'], 'connected', {
+    CDP_PROXY_BASE_URL: 'http://127.0.0.1:9',
+  });
+  assert.equal(result.code, 2, result.stderr);
+  assert.match(result.output.message, /维护命令只能在有浏览器的主机执行/);
   assert.deepEqual(await f.events(), []);
 });
 

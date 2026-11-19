@@ -2,7 +2,7 @@
 
 ## 基础信息
 
-- 地址：`http://localhost:3456`；远端模式替换为 `~/.web-access/config.env` 中的 `CDP_PROXY_BASE_URL`
+- 地址：默认 `http://localhost:3456`；`CDP_PROXY_HOST` 是非 wildcard 地址时改用该地址（IPv6 加方括号）；远端模式替换为 `~/.web-access/config.env` 中的 `CDP_PROXY_BASE_URL`
 - 检查、复用或后台启动：`node ~/.claude/skills/web-access/scripts/check-deps.mjs`
 - 服务持续运行，没有时长或空闲退出计时器；检查超时不会停止服务
 - 集中维护：`node <skill路径>/scripts/proxy-maintenance.mjs status|restart|stop`（Windows / macOS / Linux 相同）
@@ -27,10 +27,11 @@ curl -s http://localhost:3456/health
 | `activeRequests` | 执行中的浏览器操作请求数，不含健康检查和维护请求 |
 | `managedTabs` | 当前服务管理的 Agent 标签页数 |
 | `maintenance` | 正在停止；前置检查不得把它当作可用或启动第二个实例 |
+| `proxy` | 当前监听配置：`host`、`port`、`bind` |
 
 ### POST /shutdown
 
-维护 CLI 专用。JSON body 为 `{ "instanceId": "从健康检查读取的身份" }`。只接受不带 `Origin` 的本机 POST；实例不一致或仍有请求、命令、标签页、发现/握手时返回 `409`。接受后返回 `202`，进入维护状态，普通操作返回 `503`，退出只执行一次。健康检查仍可用于观察退出，CLI 不会因为实例被替换而停止新实例。
+维护 CLI 专用。JSON body 为 `{ "instanceId": "从健康检查读取的身份" }`。只接受不带 `Origin`、且来源为本机地址的 POST；实例不一致或仍有请求、命令、标签页、发现/握手时返回 `409`。接受后返回 `202`，进入维护状态，普通操作返回 `503`，退出只执行一次。健康检查仍可用于观察退出，CLI 不会因为实例被替换而停止新实例。
 
 维护 CLI 的退出码：`0` 表示状态检查/停止完成或重启后连接确认就绪；`2` 表示忙碌、身份冲突、旧服务缺少维护接口或参数错误；`3` 表示新服务已启动但尚未连接（`waitingAuthorization`，也可能是调试设置或浏览器不可用）；其他错误为 `1`。旧服务的一次性迁移需要先确认没有任务使用它，不自动强停。普通任务不要在结束时停止服务，代码变更由集中维护升级一次。
 
@@ -126,6 +127,7 @@ curl -s "http://localhost:3456/clickXY?target=ID&x=120&y=90"
 
 ### POST /setFiles?target=ID
 给 file input 设置本地文件路径（`DOM.setFileInputFiles`），完全绕过文件对话框。POST body 为 JSON。
+远端模式下 `files` 里的路径由浏览器主机解析，文件必须存在于那台机器。
 ```bash
 curl -s -X POST "http://localhost:3456/setFiles?target=ID" -d '{"selector":"input[type=file]","files":["/path/to/file1.png","/path/to/file2.png"]}'
 ```
@@ -139,6 +141,7 @@ curl -s "http://localhost:3456/scroll?target=ID&direction=bottom"
 
 ### GET /screenshot?target=ID&file=/tmp/shot.png
 截图。指定 `file` 参数保存到本地文件；不指定则返回图片二进制。可选 `format=jpeg`。
+远端模式下 `file` 写到浏览器主机；需要保存到调用端时不要传 `file`，用 `curl -o` 接收二进制。
 ```bash
 curl -s "http://localhost:3456/screenshot?target=ID&file=/tmp/shot.png"
 ```

@@ -198,7 +198,7 @@ async function fixture(t, flags = {}) {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'web-access-proxy-'));
   const scripts = path.join(root, 'scripts');
   await fsp.mkdir(scripts);
-  for (const name of ['cdp-proxy.mjs', 'cdp-connection.mjs', 'page-frames.mjs', 'user-data.mjs']) {
+  for (const name of ['cdp-proxy.mjs', 'cdp-connection.mjs', 'page-frames.mjs', 'user-data.mjs', 'proxy-endpoint.mjs']) {
     await fsp.copyFile(path.join(SCRIPTS, name), path.join(scripts, name));
   }
   await fsp.writeFile(path.join(scripts, 'fake-runtime.mjs'), RUNTIME);
@@ -246,7 +246,7 @@ async function fixture(t, flags = {}) {
     release: name => fsp.writeFile(path.join(root, name + '-release'), ''),
     spawn() {
       const child = spawn(process.execPath, ['--import', path.join(scripts, 'preload.mjs'), path.join(scripts, 'cdp-proxy.mjs')], {
-        env: { ...process.env, CDP_PROXY_PORT: String(port), TEST_RUNTIME_ROOT: root, ...flags },
+        env: { ...process.env, HOME: root, USERPROFILE: root, CDP_PROXY_PORT: String(port), TEST_RUNTIME_ROOT: root, ...flags },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       let output = '';
@@ -335,6 +335,7 @@ test('/health 提供稳定实例、运行版本与连接和占用状态', { time
   assert.equal(health.pendingCommands, 0);
   assert.equal(health.activeRequests, 0);
   assert.equal(health.maintenance, false);
+  assert.equal(health.proxy.host, '127.0.0.1');
   assert.equal((await requestJson(f.port, '/health')).body.instanceId, health.instanceId);
   assert.equal((await shutdown(f, health)).status, 202);
   assert.equal((await entry.exited).code, 0);

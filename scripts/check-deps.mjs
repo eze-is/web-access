@@ -17,15 +17,13 @@ import { fileURLToPath } from 'node:url';
 import { selectBrowser, getConfiguredBrowser, validateBrowser, sameBrowser, browserLabel, explainUnavailable, INSPECT_HINT, readConfig } from './browser-discovery.mjs';
 import { appDataRoots, listAppDataRoots } from './browser-probe.mjs';
 import { userDataPaths, migrateLegacyData } from './user-data.mjs';
+import { resolveProxyEndpoint } from './proxy-endpoint.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PROXY_SCRIPT = path.join(ROOT, 'scripts', 'cdp-proxy.mjs');
-const PROXY_CONFIG = readConfig();
-const PROXY_PORT = Number(process.env.CDP_PROXY_PORT || PROXY_CONFIG.CDP_PROXY_PORT || 3456);
-const PROXY_HOST = process.env.CDP_PROXY_HOST || PROXY_CONFIG.CDP_PROXY_HOST || '0.0.0.0';
-const LOCAL_HOST = PROXY_HOST === '0.0.0.0' || PROXY_HOST === '::' ? '127.0.0.1' : PROXY_HOST;
-const LOCAL_AUTHORITY = LOCAL_HOST.includes(':') ? `[${LOCAL_HOST}]` : LOCAL_HOST;
-const HEALTH_URL = `http://${LOCAL_AUTHORITY}:${PROXY_PORT}/health`;
+let PROXY_PORT = 3456;
+let LOCAL_AUTHORITY = '127.0.0.1';
+let HEALTH_URL = `http://${LOCAL_AUTHORITY}:${PROXY_PORT}/health`;
 const USER_DATA = userDataPaths();
 const CONFIG_PATH = USER_DATA.config;
 const CONFIG_TEMPLATE = path.join(ROOT, 'templates', 'config.env.template');
@@ -85,12 +83,21 @@ async function ensureRemoteProxy(proxyBase) {
   const health = await httpGetJson(`${proxyBase}/health`, 5000);
   if (health?.status !== 'ok') {
     console.log(`proxy: remote unavailable — ${proxyBase}`);
-    console.log('  请确认有浏览器的机器已启动 cdp-proxy，且防火墙允许 3456 端口局域网访问');
+    console.log('  请确认有浏览器的机器已启动 cdp-proxy，且防火墙允许该端口局域网访问');
     return false;
   }
-  const connected = health.connected ? 'connected' : 'not connected';
+  if (health.maintenance) {
+    console.log(`proxy: remote maintenance — ${proxyBase}`);
+    console.log('  远端 Proxy 正在维护，请等待维护完成后重试');
+    return false;
+  }
+  if (health.connected !== true) {
+    console.log(`proxy: remote not connected — ${proxyBase}`);
+    console.log('  请在浏览器机器上完成远程调试授权，确认 /health 的 connected 为 true 后重试');
+    return false;
+  }
   const browser = health.browser?.label || health.browser?.id || 'unknown';
-  console.log(`proxy: remote ready (${proxyBase}, ${connected}, browser: ${browser})`);
+  console.log(`proxy: remote ready (${proxyBase}, browser: ${browser})`);
   console.log(`  无浏览器机器后续调用请使用：${proxyBase}/targets、${proxyBase}/new 等 API`);
   return true;
 }
@@ -269,11 +276,23 @@ async function main() {
   if (migrateUserData()) ensureConfigExists();
   checkNode();
 
-  const proxyBase = normalizeProxyBase(process.env.CDP_PROXY_BASE_URL || readConfig().CDP_PROXY_BASE_URL);
+  const config = readConfig();
+  const proxyBase = normalizeProxyBase(process.env.CDP_PROXY_BASE_URL || config.CDP_PROXY_BASE_URL);
   if (proxyBase) {
     const proxyOk = await ensureRemoteProxy(proxyBase);
     if (!proxyOk) process.exit(1);
     return;
+  }
+
+  try {
+    const endpoint = resolveProxyEndpoint(config);
+    PROXY_PORT = endpoint.port;
+    LOCAL_AUTHORITY = endpoint.authority;
+    HEALTH_URL = `http://${LOCAL_AUTHORITY}:${PROXY_PORT}/health`;
+  } catch (error) {
+    console.log(`proxy: 配置错误 — ${error.message}`);
+    console.log(`  改正 ${CONFIG_PATH} 后重新运行`);
+    process.exit(1);
   }
 
   // 期望的浏览器值本身无效时先报配置错误，不进入「浏览器不一致 → 停止服务」的复用判断。

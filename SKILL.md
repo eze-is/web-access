@@ -37,7 +37,7 @@ node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 
 用户数据（`config.env` 与站点经验）位于用户目录下的 `~/.web-access/`（Windows 为 `%USERPROFILE%\.web-access\`），不在 skill 目录内，升级 skill 不受影响。旧版本存放在 skill 目录内的数据，由前置检查首次运行时自动复制过来，并输出一行 `user-data:` 说明。
 
-**局域网 / 无浏览器机器**：有浏览器的机器默认监听 `0.0.0.0:3456`，可用 `CDP_PROXY_HOST` / `CDP_PROXY_PORT` 调整，其他机器通过 `http://<有浏览器机器IP>:3456` 调用。无浏览器机器在 `config.env` 设置 `CDP_PROXY_BASE_URL` 后，前置检查只校验远端 `/health`，不发现本机浏览器；后续把 API 的 `http://localhost:3456` 替换为该 base URL。CDP Proxy 没有鉴权，只建议暴露在可信局域网 / VPN 内，不要暴露到公网。
+**局域网 / 无浏览器机器**：有浏览器的机器默认只监听 `127.0.0.1:3456`；需要局域网访问时显式把 `CDP_PROXY_HOST` 改为 `0.0.0.0`，其他机器再通过 `http://<有浏览器机器IP>:3456` 调用。无浏览器机器在 `config.env` 设置 `CDP_PROXY_BASE_URL` 后，前置检查只校验远端 `/health`（维护中或未连接会失败），不发现本机浏览器；后续把 API 的 `http://localhost:3456` 替换为该 base URL。CDP Proxy 没有鉴权，只建议暴露在可信局域网 / VPN 内，不要暴露到公网。
 
 Proxy 是全体 Agent 共用的长驻服务。普通任务不因修改代码、连接等待或任务结束重启服务。维护和切换浏览器使用跨平台的 Node 命令（将路径替换为实际 skill 路径）：
 
@@ -46,7 +46,7 @@ node "${CLAUDE_SKILL_DIR}/scripts/proxy-maintenance.mjs" status
 node "${CLAUDE_SKILL_DIR}/scripts/proxy-maintenance.mjs" restart
 ```
 
-维护命令按实例身份停止服务；有执行中的请求、未完成的 CDP 命令、Agent 标签页或连接正在建立时会拒绝停止，等任务清理完再运行。切换浏览器时先执行 `proxy-maintenance.mjs stop`，成功后再运行 `check-deps.mjs --browser <数据目录路径>`（或改写 config.env 后运行）。旧版本没有维护接口时，命令会提示一次性迁移，不自动强杀。退出码与状态字段见 [API 参考](references/cdp-api.md)。
+维护命令必须在有浏览器的主机执行；配置了 `CDP_PROXY_BASE_URL` 的无浏览器机器会被明确拒绝。维护按实例身份停止服务；有执行中的请求、未完成的 CDP 命令、Agent 标签页或连接正在建立时会拒绝停止，等任务清理完再运行。切换浏览器时先执行 `proxy-maintenance.mjs stop`，成功后再运行 `check-deps.mjs --browser <数据目录路径>`（或改写 config.env 后运行）。旧版本没有维护接口时，命令会提示一次性迁移，不自动强杀。退出码与状态字段见 [API 参考](references/cdp-api.md)。
 
 检查通过后并必须在回复中向用户直接展示以下须知，再执行站点操作：
 
@@ -140,7 +140,7 @@ node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 
 ### Proxy API
 
-所有操作通过 curl 调用 HTTP API。默认 base URL 为 `http://localhost:3456`；远端模式使用 `CDP_PROXY_BASE_URL` 配置的地址代替：
+所有操作通过 curl 调用 HTTP API。默认 base URL 为 `http://localhost:3456`；`CDP_PROXY_HOST` 是非 wildcard 地址时，本机也用该地址访问（IPv6 加方括号）；远端模式使用 `CDP_PROXY_BASE_URL` 配置的地址代替：
 
 ```bash
 # 列出用户已打开的 tab
@@ -155,8 +155,8 @@ curl -s "http://localhost:3456/info?target=ID"
 # 执行任意 JS：可读写 DOM、提取数据、操控元素、触发状态变更、提交表单、调用内部方法
 curl -s -X POST "http://localhost:3456/eval?target=ID" -d 'document.title'
 
-# 捕获页面渲染状态（含视频当前帧）
-curl -s "http://localhost:3456/screenshot?target=ID&file=/tmp/shot.png"
+# 捕获页面渲染状态（含视频当前帧）；远端模式下 file 路径在浏览器主机
+curl -s "http://localhost:3456/screenshot?target=ID" -o /tmp/shot.png
 
 # 导航（URL 走 POST body，target 走 query）、后退
 curl -s -X POST --data-raw 'https://example.com' "http://localhost:3456/navigate?target=ID"
@@ -175,7 +175,7 @@ curl -s "http://localhost:3456/clickXY?target=ID&x=120&y=90"
 curl -s "http://localhost:3456/frames?target=ID"
 curl -s -X POST "http://localhost:3456/eval?target=ID&frame=FRAME_ID" -d 'document.body.innerText'
 
-# 文件上传 — 直接设置 file input 的本地文件路径，绕过文件对话框
+# 文件上传 — 设置浏览器主机上可见的文件路径，绕过文件对话框
 curl -s -X POST "http://localhost:3456/setFiles?target=ID" -d '{"selector":"input[type=file]","files":["/path/to/file.png"]}'
 
 # 滚动（触发懒加载）

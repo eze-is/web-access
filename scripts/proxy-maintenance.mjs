@@ -5,12 +5,12 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sameBrowser, readConfig } from './browser-discovery.mjs';
+import { resolveProxyEndpoint } from './proxy-endpoint.mjs';
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
 const STOP_TIMEOUT_MS = 15000;
 const PROXY_CONFIG = readConfig();
-const CONFIG_HOST = process.env.CDP_PROXY_HOST || PROXY_CONFIG.CDP_PROXY_HOST || '127.0.0.1';
-const HEALTH_HOST = CONFIG_HOST === '0.0.0.0' || CONFIG_HOST === '::' ? '127.0.0.1' : CONFIG_HOST;
+let HEALTH_HOST = '127.0.0.1';
 
 class MaintenanceError extends Error {
   constructor(message, details = {}, exitCode = 1) {
@@ -207,17 +207,21 @@ function restartedResult(health, previous, reused, startup) {
 async function main() {
   const [action = 'status', ...extra] = process.argv.slice(2);
   if (action === '--help' && !extra.length) {
-    console.log('用法：node proxy-maintenance.mjs [status|restart|stop]；CDP_PROXY_PORT 默认 3456');
+    console.log('用法：node proxy-maintenance.mjs [status|restart|stop]；默认 http://127.0.0.1:3456');
     return;
   }
   if (!['status', 'restart', 'stop'].includes(action) || extra.length) {
     throw new MaintenanceError('用法：node proxy-maintenance.mjs [status|restart|stop]', {}, 2);
   }
-  const rawPort = process.env.CDP_PROXY_PORT || PROXY_CONFIG.CDP_PROXY_PORT || '3456';
-  const port = Number(rawPort);
-  if (!/^\d+$/.test(rawPort) || port < 1 || port > 65535) {
-    throw new MaintenanceError('CDP_PROXY_PORT 必须是 1 到 65535 的整数', {}, 2);
+  const remoteBase = String(process.env.CDP_PROXY_BASE_URL || PROXY_CONFIG.CDP_PROXY_BASE_URL || '').trim();
+  if (remoteBase) {
+    throw new MaintenanceError(`检测到远端 Proxy（${remoteBase}）；维护命令只能在有浏览器的主机执行`, {}, 2);
   }
+  let endpoint;
+  try { endpoint = resolveProxyEndpoint(PROXY_CONFIG); }
+  catch (error) { throw new MaintenanceError(`监听配置无效：${error.message}`, {}, 2); }
+  HEALTH_HOST = endpoint.localHost;
+  const port = endpoint.port;
   const health = await readHealthSettled(port);
   if (action === 'status') {
     console.log(JSON.stringify(health ? { status: 'running', health } : { status: 'stopped' }));

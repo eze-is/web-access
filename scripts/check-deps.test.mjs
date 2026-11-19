@@ -46,6 +46,7 @@ async function fixture(t, { configured = null, dataDirs = true } = {}) {
   await fs.copyFile(path.join(SCRIPTS, 'check-deps.mjs'), path.join(scripts, 'check-deps.mjs'));
   await fs.copyFile(path.join(SCRIPTS, 'user-data.mjs'), path.join(scripts, 'user-data.mjs'));
   await fs.copyFile(path.join(SCRIPTS, 'browser-probe.mjs'), path.join(scripts, 'browser-probe.mjs'));
+  await fs.copyFile(path.join(SCRIPTS, 'proxy-endpoint.mjs'), path.join(scripts, 'proxy-endpoint.mjs'));
   await fs.copyFile(path.join(SCRIPTS, 'browser-discovery.mjs'), path.join(scripts, 'browser-discovery-real.mjs'));
   await fs.writeFile(configPath, configured ? `WEB_ACCESS_BROWSER=${configured}\n` : '');
   // 测试用到的浏览器数据目录（含 Local State），配置值才是有效的
@@ -116,20 +117,22 @@ globalThis.setTimeout = (callback, delay, ...args) => originalSetTimeout(callbac
     configPath,
     events,
     async run(port, args = [], extraEnv = {}) {
+      const env = {
+        ...process.env,
+        HOME: home,
+        USERPROFILE: home,
+        LOCALAPPDATA: localAppData,
+        APPDATA: appData,
+        TEST_EVENTS_PATH: eventsPath,
+        TMPDIR: temporary,
+        TMP: temporary,
+        TEMP: temporary,
+        ...extraEnv,
+      };
+      if (port == null) delete env.CDP_PROXY_PORT;
+      else env.CDP_PROXY_PORT = String(port);
       const child = spawn(process.execPath, ['--import', preload, path.join(scripts, 'check-deps.mjs'), ...args], {
-        env: {
-          ...process.env,
-          CDP_PROXY_PORT: String(port),
-          HOME: home,
-          USERPROFILE: home,
-          LOCALAPPDATA: localAppData,
-          APPDATA: appData,
-          TEST_EVENTS_PATH: eventsPath,
-          TMPDIR: temporary,
-          TMP: temporary,
-          TEMP: temporary,
-          ...extraEnv,
-        },
+        env,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       let stdout = '';
@@ -512,4 +515,52 @@ test('迁移失败的运行不创建模板配置，下次重试仍能迁入旧�
   success(second);
   assert.match(second.stdout, /^user-data: 已迁移 config\.env/m);
   assert.equal(await fs.readFile(f.configPath, 'utf8'), 'WEB_ACCESS_BROWSER=chrome\n');
+});
+
+test('远端 Proxy 维护中时前置检查失败，不误报 ready', async t => {
+  const f = await fixture(t);
+  const proxy = await fakeProxy(t, { maintenance: true });
+  const result = await f.run(proxy.port, [], { CDP_PROXY_BASE_URL: `http://127.0.0.1:${proxy.port}` });
+  assert.equal(result.code, 1, result.stderr);
+  assert.match(result.stdout, /remote maintenance/);
+  assert.deepEqual(await f.events(), []);
+});
+
+test('远端 Proxy 未连接浏览器时前置检查失败', async t => {
+  const f = await fixture(t);
+  const proxy = await fakeProxy(t, { connected: false });
+  const result = await f.run(proxy.port, [], { CDP_PROXY_BASE_URL: `http://127.0.0.1:${proxy.port}` });
+  assert.equal(result.code, 1, result.stderr);
+  assert.match(result.stdout, /remote not connected/);
+  assert.deepEqual(await f.events(), []);
+});
+
+test('远端 Proxy 已连接时前置检查成功', async t => {
+  const f = await fixture(t);
+  const proxy = await fakeProxy(t);
+  const result = await f.run(proxy.port, [], { CDP_PROXY_BASE_URL: `http://127.0.0.1:${proxy.port}` });
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /remote ready/);
+  assert.deepEqual(await f.events(), []);
+});
+
+test('迁移首跑使用旧配置里的监听端口', async t => {
+  const f = await fixture(t);
+  await fs.rm(f.configPath);
+  const server = http.createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ status: 'ok', connected: true, browser: { id: 'chrome', label: 'Chrome' } }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  });
+  const port = server.address().port;
+  await fs.writeFile(path.join(f.skill, 'config.env'), `WEB_ACCESS_BROWSER=chrome\nCDP_PROXY_PORT=${port}\n`);
+
+  const result = await f.run(null, [], { TEST_SELECT: JSON.stringify({ kind: 'unset' }) });
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /已迁移 config\.env/);
+  assert.match(result.stdout, /proxy: ready/);
 });
