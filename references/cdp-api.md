@@ -2,7 +2,7 @@
 
 ## 基础信息
 
-- 地址：`http://localhost:3456`
+- 地址：`http://localhost:3456`；远端模式替换为 `~/.web-access/config.env` 中的 `CDP_PROXY_BASE_URL`
 - 检查、复用或后台启动：`node ~/.claude/skills/web-access/scripts/check-deps.mjs`
 - 服务持续运行，没有时长或空闲退出计时器；检查超时不会停止服务
 - 集中维护：`node <skill路径>/scripts/proxy-maintenance.mjs status|restart|stop`（Windows / macOS / Linux 相同）

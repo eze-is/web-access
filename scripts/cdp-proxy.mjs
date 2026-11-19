@@ -10,7 +10,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { createCdpConnection } from './cdp-connection.mjs';
-import { selectBrowser, explainUnavailable } from './browser-discovery.mjs';
+import { selectBrowser, explainUnavailable, readConfig } from './browser-discovery.mjs';
 import { createPageFrames, FrameError } from './page-frames.mjs';
 
 // --- 解析命令行 --browser 参数（本次启动用哪个浏览器）---
@@ -24,7 +24,11 @@ function parseBrowserArg() {
 }
 const BROWSER_OVERRIDE = parseBrowserArg();
 
-const PORT = parseInt(process.env.CDP_PROXY_PORT || '3456');
+const PROXY_CONFIG = readConfig();
+const PORT = parseInt(process.env.CDP_PROXY_PORT || PROXY_CONFIG.CDP_PROXY_PORT || '3456');
+const HOST = process.env.CDP_PROXY_HOST || PROXY_CONFIG.CDP_PROXY_HOST || '0.0.0.0';
+const LOCAL_HOST = HOST === '0.0.0.0' || HOST === '::' ? '127.0.0.1' : HOST;
+const LOCAL_AUTHORITY = LOCAL_HOST.includes(':') ? `[${LOCAL_HOST}]` : LOCAL_HOST;
 const sessions = new Map(); // targetId -> sessionId
 const managedTabs = new Map(); // targetId -> { lastAccessed: number }
 const TAB_IDLE_TIMEOUT = parseInt(process.env.CDP_TAB_IDLE_TIMEOUT || '900000'); // 15 min default
@@ -263,6 +267,7 @@ const server = http.createServer(async (req, res) => {
     // /health 不需要连接浏览器
     if (pathname === '/health') {
       const connected = connection.connected;
+      const bind = HOST === '0.0.0.0' || HOST === '::' ? 'localhost / LAN IP' : HOST;
       res.end(JSON.stringify({
         status: 'ok',
         connected,
@@ -270,6 +275,7 @@ const server = http.createServer(async (req, res) => {
         sessions: sessions.size,
         managedTabs: managedTabs.size,
         chromePort,
+        proxy: { host: HOST, port: PORT, bind },
         pid: process.pid,
         instanceId: INSTANCE_ID,
         startedAt: STARTED_AT,
@@ -653,7 +659,7 @@ async function main() {
   try {
     await new Promise((resolve, reject) => {
       server.once('error', reject);
-      server.listen(PORT, '127.0.0.1', () => {
+      server.listen(PORT, HOST, () => {
         server.removeListener('error', reject);
         resolve();
       });
@@ -662,7 +668,7 @@ async function main() {
     if (error.code === 'EADDRINUSE') {
       let existing;
       try {
-        const response = await fetch(`http://127.0.0.1:${PORT}/health`, { signal: AbortSignal.timeout(2000) });
+        const response = await fetch(`http://${LOCAL_AUTHORITY}:${PORT}/health`, { signal: AbortSignal.timeout(2000) });
         if (response.ok) existing = await response.json();
       } catch { /* 无法确认占用者时明确失败，不连接浏览器。 */ }
       if (existing?.status === 'ok') {
@@ -672,7 +678,10 @@ async function main() {
     }
     throw error;
   }
-  lifecycleLog(`运行在 http://127.0.0.1:${PORT}，revision=${RUNNING_REVISION}`);
+  const bindDesc = HOST === '0.0.0.0' || HOST === '::'
+    ? `http://localhost:${PORT}（局域网可通过 http://<本机局域网IP>:${PORT} 访问）`
+    : `http://${HOST.includes(':') ? `[${HOST}]` : HOST}:${PORT}`;
+  lifecycleLog(`运行在 ${bindDesc}，revision=${RUNNING_REVISION}`);
   cleanupTimer = setInterval(cleanupIdleTabs, CLEANUP_INTERVAL);
   cleanupTimer.unref();
   process.on('SIGINT', () => { void shutdown('SIGINT'); });

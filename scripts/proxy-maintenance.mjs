@@ -4,10 +4,13 @@ import { spawn } from 'node:child_process';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { sameBrowser } from './browser-discovery.mjs';
+import { sameBrowser, readConfig } from './browser-discovery.mjs';
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
 const STOP_TIMEOUT_MS = 15000;
+const PROXY_CONFIG = readConfig();
+const CONFIG_HOST = process.env.CDP_PROXY_HOST || PROXY_CONFIG.CDP_PROXY_HOST || '127.0.0.1';
+const HEALTH_HOST = CONFIG_HOST === '0.0.0.0' || CONFIG_HOST === '::' ? '127.0.0.1' : CONFIG_HOST;
 
 class MaintenanceError extends Error {
   constructor(message, details = {}, exitCode = 1) {
@@ -23,7 +26,7 @@ function requestJson(port, pathname, { method = 'GET', body, timeoutMs = 1000 } 
   return new Promise((resolve, reject) => {
     const payload = body === undefined ? null : JSON.stringify(body);
     const req = http.request({
-      hostname: '127.0.0.1', port, path: pathname, method, agent: false,
+      hostname: HEALTH_HOST, port, path: pathname, method, agent: false,
       headers: payload === null ? {} : {
         'content-type': 'application/json',
         'content-length': Buffer.byteLength(payload),
@@ -210,7 +213,7 @@ async function main() {
   if (!['status', 'restart', 'stop'].includes(action) || extra.length) {
     throw new MaintenanceError('用法：node proxy-maintenance.mjs [status|restart|stop]', {}, 2);
   }
-  const rawPort = process.env.CDP_PROXY_PORT || '3456';
+  const rawPort = process.env.CDP_PROXY_PORT || PROXY_CONFIG.CDP_PROXY_PORT || '3456';
   const port = Number(rawPort);
   if (!/^\d+$/.test(rawPort) || port < 1 || port > 65535) {
     throw new MaintenanceError('CDP_PROXY_PORT 必须是 1 到 65535 的整数', {}, 2);

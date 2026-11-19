@@ -37,6 +37,8 @@ node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 
 用户数据（`config.env` 与站点经验）位于用户目录下的 `~/.web-access/`（Windows 为 `%USERPROFILE%\.web-access\`），不在 skill 目录内，升级 skill 不受影响。旧版本存放在 skill 目录内的数据，由前置检查首次运行时自动复制过来，并输出一行 `user-data:` 说明。
 
+**局域网 / 无浏览器机器**：有浏览器的机器默认监听 `0.0.0.0:3456`，可用 `CDP_PROXY_HOST` / `CDP_PROXY_PORT` 调整，其他机器通过 `http://<有浏览器机器IP>:3456` 调用。无浏览器机器在 `config.env` 设置 `CDP_PROXY_BASE_URL` 后，前置检查只校验远端 `/health`，不发现本机浏览器；后续把 API 的 `http://localhost:3456` 替换为该 base URL。CDP Proxy 没有鉴权，只建议暴露在可信局域网 / VPN 内，不要暴露到公网。
+
 Proxy 是全体 Agent 共用的长驻服务。普通任务不因修改代码、连接等待或任务结束重启服务。维护和切换浏览器使用跨平台的 Node 命令（将路径替换为实际 skill 路径）：
 
 ```bash
@@ -138,7 +140,7 @@ node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 
 ### Proxy API
 
-所有操作通过 curl 调用 HTTP API：
+所有操作通过 curl 调用 HTTP API。默认 base URL 为 `http://localhost:3456`；远端模式使用 `CDP_PROXY_BASE_URL` 配置的地址代替：
 
 ```bash
 # 列出用户已打开的 tab
