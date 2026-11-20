@@ -314,6 +314,14 @@ async function readBody(req) {
 
 // --- HTTP API ---
 const server = http.createServer(async (req, res) => {
+  // 代理没有认证，/eval 能在带登录态的浏览器里跑任意 JS。浏览器里的网页发来的请求带 Origin
+  // 或 Sec-Fetch-Site（none 是用户自己在地址栏打开），curl 和 node 脚本都不带，按这两个头拒掉网页来源
+  const site = req.headers['sec-fetch-site'];
+  if (req.headers.origin !== undefined || (site && site !== 'none')) {
+    res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: '拒绝来自网页的请求' }));
+    return;
+  }
   const parsed = new URL(req.url, `http://localhost:${PORT}`);
   const pathname = parsed.pathname;
   const q = Object.fromEntries(parsed.searchParams);

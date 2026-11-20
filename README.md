@@ -41,6 +41,16 @@ An agent skill for web research and browser automation, including logged-in page
 
 > 推荐必读：[Web Access：一个 Skill，拉满 Agent 联网和浏览器能力](https://mp.weixin.qq.com/s/rps5YVB6TchT9npAaIWKCw) ，完整介绍了 Web-Access Skill 的开发细节与 Agent Skill 设计哲学，帮助你也能写出类似通用、高上限的 Skill
 
+## 和上游的区别
+
+本仓是 [eze-is/web-access](https://github.com/eze-is/web-access) 的分叉（fork），基于上游 v2.5.3，主要多了三处：
+
+- **专用 Chrome 选项**：`config.env` 写 `WEB_ACCESS_BROWSER=agent`，连一个用非默认 profile、固定端口启动的后台 Chrome（默认 9223）。连接不会弹「允许远程调试」，也不碰你正在用的浏览器。
+- **先用宿主自带的能力**：宿主已有浏览器、连接器或专用 CLI 时先用它们，本 skill 的 CDP 作后备。
+- **核实规则**：只把一手来源当证据，社区内容会抽查评论区。
+
+另外，代理会拒绝带 `Origin` 或跨站 `Sec-Fetch-Site` 头的请求：代理没有认证，这样本机打开的网页调不动它，curl 和脚本照常可用。上游 v2.6 之后的 iframe、`~/.web-access/` 用户数据目录等改动没有合进来。
+
 ---
 
 ## v2.5.2 能力
@@ -97,7 +107,7 @@ An agent skill for web research and browser automation, including logged-in page
 **方式一：npx skills 一键安装（推荐）**
 
 ```bash
-npx skills add eze-is/web-access
+npx skills add ruodou233/web-access
 ```
 
 > [skills CLI](https://github.com/vercel-labs/skills) 是开源的 Agent Skill 包管理器，自动检测你的 Agent 环境并安装到正确位置。
@@ -105,20 +115,20 @@ npx skills add eze-is/web-access
 **方式二：让 Agent 自动安装**
 
 ```
-帮我安装这个 skill：https://github.com/eze-is/web-access
+帮我安装这个 skill：https://github.com/ruodou233/web-access
 ```
 
 **方式三：Plugin 安装（Claude Code）**
 
 ```bash
-claude plugin marketplace add https://github.com/eze-is/web-access
+claude plugin marketplace add https://github.com/ruodou233/web-access
 claude plugin install web-access@web-access --scope user
 ```
 
 **方式四：手动**
 
 ```bash
-git clone https://github.com/eze-is/web-access ~/.claude/skills/web-access
+git clone https://github.com/ruodou233/web-access ~/.claude/skills/web-access
 ```
 
 ## 前置配置（CDP 模式）
@@ -139,7 +149,7 @@ skill 长期偏好保存在 `${CLAUDE_SKILL_DIR}/config.env`（首次运行自�
 WEB_ACCESS_BROWSER=edge
 ```
 
-合法值：`chrome` / `edge`
+合法值：`chrome` / `edge` / `agent`（专用 Chrome：需另行用 `--remote-debugging-port` 和独立的 `--user-data-dir` 启动，端口用 `AGENT_CHROME_PORT` 指定，默认 9223）
 
 **临时用别的浏览器**（不修改 config.env）：
 
